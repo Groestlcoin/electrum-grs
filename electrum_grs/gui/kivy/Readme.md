@@ -70,7 +70,7 @@ You probably need to clear the cache: `rm -rf .buildozer/android/platform/build/
 Assuming `adb` is installed:
 ```
 $ adb -d install -r bin/Electrum-GRS-*-debug.apk
-$ adb shell monkey -p org.groestlcoin.electrumGRS 1
+$ adb shell monkey -p org.groestlcoin.electrumgrs 1
 ```
 
 
@@ -94,7 +94,7 @@ adb logcat | grep python
 ```
 Better `grep` but fragile because of `cut`:
 ```
-adb logcat | grep -F "`adb shell ps | grep org.groestlcoin.ElectrumGRS | cut -c14-19`"
+adb logcat | grep -F "`adb shell ps | grep org.groestlcoin.electrumgrs | cut -c14-19`"
 ```
 
 

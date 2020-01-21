@@ -4,7 +4,7 @@
 title = Electrum-GRS
 
 # (str) Package name
-package.name = ElectrumGRS
+package.name = electrumgrs
 
 # (str) Package domain (needed for android/ios packaging)
 package.domain = org.groestlcoin
@@ -32,7 +32,7 @@ source.exclude_patterns = Makefile,setup*
 #version.filename = %(source.dir)s/electrum_grs/version.py
 
 # (str) Application versioning (method 2)
-version = 3.3.8
+version = 3.3.8.1
 
 # (list) Application requirements
 requirements =
