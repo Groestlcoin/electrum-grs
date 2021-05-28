@@ -103,7 +103,7 @@ class BumpFeeDialog(FeeSliderDialog, Factory.Popup):
         target, tooltip, dyn = self.config.get_fee_target()
         self.ids.fee_target.text = target
         feerate = self.config.fee_per_kb() / 1000
-        self.ids.new_feerate.value = f'{feerate:.1f} sat/B'
+        self.ids.new_feerate.value = f'{feerate:.1f} gro/B'
 
     def on_ok(self):
         new_fee_rate = self.config.fee_per_kb() / 1000
