@@ -30,7 +30,7 @@ RUN apt-get update -q && \
         libxkbcommon-x11-0=0.5.0-1ubuntu2.1 \
         libxcb-util1=0.4.0-0ubuntu3 \
         libxcb-xinerama0=1.11.1-1ubuntu1 \
-        libc6-dev=2.23-0ubuntu11.2 \
+        libc6-dev=2.23-0ubuntu11.3 \
         && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get autoremove -y && \
