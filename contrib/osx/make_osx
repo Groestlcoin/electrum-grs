@@ -139,7 +139,7 @@ cp "$PROJECT_ROOT"/electrum_grs/libzbar.0.dylib "$CONTRIB"/osx
 
 info "Building libusb dylib..."
 "$CONTRIB"/make_libusb.sh || fail "Could not build libusb dylib"
-cp "$PROJECT_ROOT"/electrum/libusb-1.0.dylib "$CONTRIB"/osx
+cp "$PROJECT_ROOT"/electrum_grs/libusb-1.0.dylib "$CONTRIB"/osx
 
 
 info "Installing requirements..."
