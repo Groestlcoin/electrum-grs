@@ -11,10 +11,12 @@ jobs:
         uses: actions/setup-python@v3
         with:
           python-version: 3.9.13
+      - name: Unpin the distro packages
+        run: sed -i 's|COPY|#&|' contrib/build-wine/Dockerfile
       - name: Builder image
         env:
           TARGET_OS: Windows
-        run: docker build --no-cache -t electrum-grs-wine-builder-img ./contrib/build-wine/
+        run: docker build -t electrum-grs-wine-builder-img ./contrib/build-wine/
       - name: Compile Windows binary
         env:
           TARGET_OS: Windows
@@ -39,8 +41,10 @@ jobs:
         uses: actions/setup-python@v3
         with:
           python-version: 3.9.15
+      - name: Unpin the distro packages
+        run: sed -i 's|COPY|#&|' contrib/build-linux/appimage/Dockerfile
       - name: Builder image
-        run: docker build --no-cache -t electrum-grs-appimage-builder-img ./contrib/build-linux/appimage/
+        run: docker build -t electrum-grs-appimage-builder-img ./contrib/build-linux/appimage/
       - name: Compile Linux AppImage
         run: docker run --name electrum-grs-appimage-builder-cont -v $PWD:/opt/electrum-grs --rm --workdir /opt/electrum-grs/contrib/build-linux/appimage electrum-grs-appimage-builder-img ./make_appimage.sh
       - name: Upload Artifact
@@ -60,7 +64,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Builder image
-        run: docker build --no-cache -t electrum-grs-sdist-builder-img ./contrib/build-linux/sdist/
+        run: docker build -t electrum-grs-sdist-builder-img ./contrib/build-linux/sdist/
       - name: Compile Linux tarball
         run: docker run --name electrum-grs-sdist-builder-cont -v $PWD:/opt/electrum-grs --rm --workdir /opt/electrum-grs/contrib/build-linux/sdist electrum-grs-sdist-builder-img ./make_sdist.sh
       - name: Upload Artifact
@@ -80,7 +84,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Builder image
-        run: docker build --no-cache -t electrum-grs-source-only-tarball-builder-img ./contrib/build-linux/sdist/
+        run: docker build -t electrum-grs-source-only-tarball-builder-img ./contrib/build-linux/sdist/
       - name: Compile Linux tarball
         run: docker run --name electrum-grs-source-only-tarball-builder-cont -v $PWD:/opt/electrum-grs --rm --workdir /opt/electrum-grs/contrib/build-linux/sdist --env OMIT_UNCLEAN_FILES=1 electrum-grs-source-only-tarball-builder-img ./make_sdist.sh
       - name: Upload Artifact
@@ -99,12 +103,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+      - name: Unpin the distro packages
+        run: sed -i 's|COPY contrib/android|#&|' contrib/android/Dockerfile
       - name: Builder image
-        run: docker build --no-cache -t electrum-grs-android-builder-img --file contrib/android/Dockerfile .
+        run: docker build -t electrum-grs-android-builder-img --file contrib/android/Dockerfile .
       - name: Compile Android apk
+        env:
+           ENCODED_STRING: ${{ secrets.ANDROID_SIGNING_KEY}}
         run: |
+          TMP_KEYSTORE_FILE_PATH="${RUNNER_TEMP}"/keystore
+          mkdir "${TMP_KEYSTORE_FILE_PATH}"
+          echo $ENCODED_STRING | base64 -di > "${TMP_KEYSTORE_FILE_PATH}"/electrumgrs.keystore
           sudo mkdir --parents /.buildozer/.gradle
-          sudo docker run --name electrum-grs-android-builder-cont -v $PWD:/home/user/wspace/electrum-grs -v /.buildozer/.gradle:/home/user/.gradle --workdir /home/user/wspace/electrum-grs electrum-grs-android-builder-img ./contrib/android/make_apk.sh kivy all debug
+          sudo docker run --name electrum-grs-android-builder-cont -v $PWD:/home/user/wspace/electrum-grs -v /.buildozer/.gradle:/home/user/.gradle -v $TMP_KEYSTORE_FILE_PATH:/root/.keystore --workdir /home/user/wspace/electrum-grs electrum-grs-android-builder-img ./contrib/android/make_apk.sh kivy all release ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       - name: Upload Artifact
         uses: actions/upload-artifact@v3
         with:
@@ -133,14 +144,22 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: false
+          large-packages: true
+          docker-images: true
           swap-storage: true
+      - name: Unpin the distro packages
+        run: sed -i 's|COPY contrib/android|#&|' contrib/android/Dockerfile
       - name: Builder image
-        run: docker build --no-cache -t electrum-grs-android-builder-img --file contrib/android/Dockerfile .
+        run: docker build -t electrum-grs-android-builder-img --file contrib/android/Dockerfile .
       - name: Compile Android apk
+        env:
+           ENCODED_STRING: ${{ secrets.ANDROID_SIGNING_KEY }}
         run: |
+          TMP_KEYSTORE_FILE_PATH="${RUNNER_TEMP}"/keystore
+          mkdir "${TMP_KEYSTORE_FILE_PATH}"
+          echo $ENCODED_STRING | base64 -di > "${TMP_KEYSTORE_FILE_PATH}"/electrumgrs.keystore
           sudo mkdir --parents /.buildozer/.gradle
-          sudo docker run --name electrum-grs-android-builder-cont -v $PWD:/home/user/wspace/electrum-grs -v /.buildozer/.gradle:/home/user/.gradle --workdir /home/user/wspace/electrum-grs electrum-grs-android-builder-img ./contrib/android/make_apk.sh qml all debug
+          sudo docker run --name electrum-grs-android-builder-cont -v $PWD:/home/user/wspace/electrum-grs -v /.buildozer/.gradle:/home/user/.gradle -v $TMP_KEYSTORE_FILE_PATH:/root/.keystore --workdir /home/user/wspace/electrum-grs electrum-grs-android-builder-img ./contrib/android/make_apk.sh qml all release ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       - name: Upload Artifact
         uses: actions/upload-artifact@v3
         with:
