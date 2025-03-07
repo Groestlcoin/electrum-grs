@@ -1,4 +1,4 @@
-from electrum.fee_policy import FeeHistogram
+from electrum_grs.fee_policy import FeeHistogram
 
 from . import ElectrumTestCase
 
@@ -51,5 +51,3 @@ class Test_FeeHistogram(ElectrumTestCase):
         self.assertEqual(370000, mempool_fees.fee_to_depth(6))
         self.assertEqual(495000, mempool_fees.fee_to_depth(5.5))
         self.assertEqual(36495000, mempool_fees.fee_to_depth(0.5))
-
-
