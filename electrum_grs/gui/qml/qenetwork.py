@@ -1,11 +1,12 @@
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import pyqtProperty, pyqtSignal, QObject
+from PyQt6.QtCore import pyqtProperty, pyqtSignal, QObject, pyqtSlot
 
 from electrum_grs.logging import get_logger
 from electrum_grs import constants
+from electrum_grs.network import ProxySettings
 from electrum_grs.interface import ServerAddr
-from electrum_grs.simple_config import FEERATE_DEFAULT_RELAY
+from electrum_grs.fee_policy import FEERATE_DEFAULT_RELAY
 
 from .util import QtEventListener, event_listener
 from .qeserverlistmodel import QEServerListModel
@@ -24,6 +25,7 @@ class QENetwork(QObject, QtEventListener):
     serverHeightChanged = pyqtSignal([int], arguments=['height'])
     proxySet = pyqtSignal()
     proxyChanged = pyqtSignal()
+    torProbeFinished = pyqtSignal([str, int], arguments=['host', 'port'])
     statusChanged = pyqtSignal()
     feeHistogramUpdated = pyqtSignal()
     chaintipsChanged = pyqtSignal()
@@ -135,23 +137,7 @@ class QENetwork(QObject, QtEventListener):
         self.update_histogram(histogram)
 
     def update_histogram(self, histogram):
-        if not histogram:
-            histogram = [[FEERATE_DEFAULT_RELAY/1000,1]]
-        # cap the histogram to a limited number of megabytes
-        bytes_limit = 10*1000*1000
-        bytes_current = 0
-        capped_histogram = []
-        for item in sorted(histogram, key=lambda x: x[0], reverse=True):
-            if bytes_current >= bytes_limit:
-                break
-            slot = min(item[1], bytes_limit-bytes_current)
-            bytes_current += slot
-            capped_histogram.append([
-                max(FEERATE_DEFAULT_RELAY/1000, item[0]),  # clamped to [FEERATE_DEFAULT_RELAY/1000,inf[
-                slot,  # width of bucket
-                bytes_current,  # cumulative depth at far end of bucket
-            ])
-
+        capped_histogram, bytes_current = histogram.get_capped_data()
         # add clamping attributes for the GUI
         self._fee_histogram = {
             'histogram': capped_histogram,
@@ -253,14 +239,14 @@ class QENetwork(QObject, QtEventListener):
     @pyqtProperty('QVariantMap', notify=proxyChanged)
     def proxy(self):
         net_params = self.network.get_parameters()
-        return net_params.proxy if net_params.proxy else {}
+        proxy = net_params.proxy
+        return proxy.to_dict()
 
     @proxy.setter
-    def proxy(self, proxy_settings):
+    def proxy(self, proxy_dict):
         net_params = self.network.get_parameters()
-        if not proxy_settings['enabled']:
-            proxy_settings = None
-        net_params = net_params._replace(proxy=proxy_settings)
+        proxy = ProxySettings.from_dict(proxy_dict)
+        net_params = net_params._replace(proxy=proxy)
         self.network.run_from_another_thread(self.network.set_parameters(net_params))
         self.proxyChanged.emit()
 
@@ -289,3 +275,7 @@ class QENetwork(QObject, QtEventListener):
         if self._serverListModel is None:
             self._serverListModel = QEServerListModel(self.network)
         return self._serverListModel
+
+    @pyqtSlot()
+    def probeTor(self):
+        ProxySettings.probe_tor(self.torProbeFinished.emit)  # via signal

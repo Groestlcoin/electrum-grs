@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Set
 
 from PyQt6.QtCore import (pyqtSlot, pyqtSignal, pyqtProperty, QObject, QT_VERSION_STR, PYQT_VERSION_STR,
                           qInstallMessageHandler, QTimer, QSortFilterProxyModel)
-from PyQt6.QtGui import QGuiApplication, QFontDatabase
+from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtQml import qmlRegisterType, QQmlApplicationEngine
 
 import electrum_grs
@@ -20,6 +20,7 @@ from electrum_grs.bip21 import BITCOIN_BIP21_URI_SCHEME, LIGHTNING_URI_SCHEME
 from electrum_grs.base_crash_reporter import BaseCrashReporter, EarlyExceptionsQueue
 from electrum_grs.network import Network
 from electrum_grs.plugin import run_hook
+from electrum_grs.gui.common_qt.util import get_font_id
 
 from .qeconfig import QEConfig
 from .qedaemon import QEDaemon
@@ -29,7 +30,7 @@ from .qeqr import QEQRParser, QEQRImageProvider, QEQRImageProviderHelper
 from .qeqrscanner import QEQRScanner
 from .qebitcoin import QEBitcoin
 from .qefx import QEFX
-from .qetxfinalizer import QETxFinalizer, QETxRbfFeeBumper, QETxCpfpFeeBumper, QETxCanceller, QETxSweepFinalizer
+from .qetxfinalizer import QETxFinalizer, QETxRbfFeeBumper, QETxCpfpFeeBumper, QETxCanceller, QETxSweepFinalizer, FeeSlider
 from .qeinvoice import QEInvoice, QEInvoiceParser
 from .qerequestdetails import QERequestDetails
 from .qetypes import QEAmount
@@ -407,7 +408,7 @@ class ElectrumQmlApplication(QGuiApplication):
         qmlRegisterType(QETxCanceller, 'org.electrum', 1, 0, 'TxCanceller')
         qmlRegisterType(QETxSweepFinalizer, 'org.electrum', 1, 0, 'SweepFinalizer')
         qmlRegisterType(QEBip39RecoveryListModel, 'org.electrum', 1, 0, 'Bip39RecoveryListModel')
-
+        qmlRegisterType(FeeSlider, 'org.electrum', 1, 0, 'FeeSlider')
         # TODO QT6: these were declared as uncreatable, but that doesn't seem to work for pyqt6
         # qmlRegisterUncreatableType(QEAmount, 'org.electrum', 1, 0, 'Amount', 'Amount can only be used as property')
         # qmlRegisterUncreatableType(QENewWalletWizard, 'org.electrum', 1, 0, 'QNewWalletWizard', 'QNewWalletWizard can only be used as property')
@@ -426,8 +427,8 @@ class ElectrumQmlApplication(QGuiApplication):
 
         # add a monospace font as we can't rely on device having one
         self.fixedFont = 'PT Mono'
-        not_loaded = QFontDatabase.addApplicationFont('electrum_grs/gui/qml/fonts/PTMono-Regular.ttf') < 0
-        not_loaded = QFontDatabase.addApplicationFont('electrum_grs/gui/qml/fonts/PTMono-Bold.ttf') < 0 and not_loaded
+        not_loaded = get_font_id('PTMono-Regular.ttf') < 0
+        not_loaded = get_font_id('PTMono-Bold.ttf') < 0 and not_loaded
         if not_loaded:
             self.logger.warning('Could not load font PT Mono')
             self.fixedFont = 'Monospace' # hope for the best

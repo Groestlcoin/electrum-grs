@@ -72,6 +72,7 @@ from electrum_grs.logging import Logger
 from electrum_grs.lntransport import extract_nodeid, ConnStringFormatError
 from electrum_grs.lnaddr import lndecode
 from electrum_grs.submarine_swaps import SwapServerTransport, NostrTransport
+from electrum_grs.fee_policy import FeePolicy
 
 from .rate_limiter import rate_limited
 from .exception_window import Exception_Hook
@@ -1004,12 +1005,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                 if self.fx.is_enabled():
                     balance_text += self.fx.get_fiat_status_text(balance,
                         self.base_unit(), self.get_decimal_point()) or ''
-                if not self.network.proxy:
+                if not self.network.proxy or not self.network.proxy.enabled:
                     icon = read_QIcon("status_connected%s.png"%fork_str)
                 else:
                     icon = read_QIcon("status_connected_proxy%s.png"%fork_str)
         else:
-            if self.network.proxy:
+            if self.network.proxy and self.network.proxy.enabled:
                 network_text = "{} ({})".format(_("Not connected"), _("proxy enabled"))
             else:
                 network_text = _("Not connected")
@@ -1384,11 +1385,13 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         WaitingDialog(self, msg, task, on_success, on_failure)
 
     def mktx_for_open_channel(self, *, funding_sat, node_id):
-        make_tx = lambda fee_est, *, confirmed_only=False: self.wallet.lnworker.mktx_for_open_channel(
-            coins = self.get_coins(nonlocal_only=True, confirmed_only=confirmed_only),
-            funding_sat=funding_sat,
-            node_id=node_id,
-            fee_est=fee_est)
+        def make_tx(fee_policy, *, confirmed_only=False, base_tx=None):
+            assert base_tx is None
+            return self.wallet.lnworker.mktx_for_open_channel(
+                coins = self.get_coins(nonlocal_only=True, confirmed_only=confirmed_only),
+                funding_sat=funding_sat,
+                node_id=node_id,
+                fee_policy=fee_policy)
         return make_tx
 
     def open_channel(self, connect_str, funding_sat, push_amt):
@@ -1408,8 +1411,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             return
         self._open_channel(connect_str, funding_sat, push_amt, funding_tx)
 
-    def confirm_tx_dialog(self, make_tx, output_value, allow_preview=True):
-        d = ConfirmTxDialog(window=self, make_tx=make_tx, output_value=output_value, allow_preview=allow_preview)
+    def confirm_tx_dialog(self, make_tx, output_value, allow_preview=True, batching_candidates=None):
+        d = ConfirmTxDialog(window=self, make_tx=make_tx, output_value=output_value, allow_preview=allow_preview, batching_candidates=batching_candidates)
         if d.not_enough_funds:
             # note: use confirmed_only=False here, regardless of config setting,
             #       as the user needs to get to ConfirmTxDialog to change the config setting
@@ -1760,7 +1763,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             self.tor_button = StatusBarButton(
                 read_QIcon("tor_logo.png"),
                 _("Tor"),
-                self.gui_object.show_network_dialog,
+                partial(self.gui_object.show_network_dialog, proxy_tab=True),
                 sb_height,
             )
             sb.addPermanentWidget(self.tor_button)
@@ -2692,15 +2695,16 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             fee = min(max_fee, fee)
             fee = max(total_size, fee)  # pay at least 1 sat/byte for combined size
             return fee
-        suggested_feerate = self.config.fee_per_kb()
+        fee_policy = FeePolicy(self.config.FEE_POLICY)
+        suggested_feerate = fee_policy.fee_per_kb(self.network)
         fee = get_child_fee_from_total_feerate(suggested_feerate)
         fee_e.setAmount(fee)
         grid.addWidget(QLabel(_('Fee for child') + ':'), 3, 0)
         grid.addWidget(fee_e, 3, 1)
-        def on_rate(dyn, pos, fee_rate):
+        def on_rate(fee_rate):
             fee = get_child_fee_from_total_feerate(fee_rate)
             fee_e.setAmount(fee)
-        fee_slider = FeeSlider(self, self.config, on_rate)
+        fee_slider = FeeSlider(self, fee_policy, on_rate)
         fee_combo = FeeComboBox(fee_slider)
         fee_slider.update()
         grid.addWidget(fee_slider, 4, 1)

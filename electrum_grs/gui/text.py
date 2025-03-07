@@ -23,7 +23,7 @@ from electrum_grs.transaction import PartialTxOutput
 from electrum_grs.wallet import Wallet, Abstract_Wallet
 from electrum_grs.wallet_db import WalletDB
 from electrum_grs.storage import WalletStorage
-from electrum_grs.network import NetworkParameters, TxBroadcastError, BestEffortRequestFailed
+from electrum_grs.network import NetworkParameters, TxBroadcastError, BestEffortRequestFailed, ProxySettings
 from electrum_grs.interface import ServerAddr
 from electrum_grs.invoices import Invoice
 
@@ -753,10 +753,14 @@ class ElectrumGui(BaseElectrumGui, EventListener):
                         self.show_message("Error:" + server_str + "\nIn doubt, type \"auto-connect\"")
                         return False
             if out.get('server') or out.get('proxy') or out.get('proxy user') or out.get('proxy pass'):
-                new_proxy_config = electrum_grs.network.deserialize_proxy(out.get('proxy')) if out.get('proxy') else proxy_config
-                if new_proxy_config:
-                    new_proxy_config['user'] = out.get('proxy user') if 'proxy user' in out else proxy_config['user']
-                    new_proxy_config['pass'] = out.get('proxy pass') if 'proxy pass' in out else proxy_config['pass']
+                if out.get('proxy'):
+                    new_proxy_config = ProxySettings()
+                    new_proxy_config.deserialize_proxy_cfgstr(out.get('proxy'))
+                    new_proxy_config.user = out.get('proxy user', proxy_config.user)
+                    new_proxy_config.password = out.get('proxy pass', proxy_config.password)
+                    new_proxy_config.enabled = True
+                else:
+                    new_proxy_config = proxy_config
                 net_params = NetworkParameters(
                     server=server_addr,
                     proxy=new_proxy_config,
@@ -764,14 +768,14 @@ class ElectrumGui(BaseElectrumGui, EventListener):
                 self.network.run_from_another_thread(self.network.set_parameters(net_params))
 
     def settings_dialog(self):
-        fee = str(Decimal(self.config.fee_per_kb()) / COIN)
+        from electrum_grs.fee_policy import FeePolicy
         out = self.run_dialog('Settings', [
-            {'label':'Default fee', 'type':'satoshis', 'value': fee}
-            ], buttons = 1)
+            {'label':'Fee policy', 'type':'str', 'value': self.config.FEE_POLICY}
+        ], buttons = 1)
         if out:
-            if out.get('Default fee'):
-                fee = int(Decimal(out['Default fee']) * COIN)
-                self.config.FEE_EST_STATIC_FEERATE = fee
+            if descr := out.get('Fee policy'):
+                fee_policy = FeePolicy(descr)
+                self.config.FEE_POLICY = fee_policy.get_descriptor()
 
     def password_dialog(self):
         out = self.run_dialog('Password', [

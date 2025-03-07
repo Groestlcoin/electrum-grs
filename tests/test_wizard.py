@@ -2,7 +2,7 @@ import os
 
 from electrum_grs import SimpleConfig
 from electrum_grs.interface import ServerAddr
-from electrum_grs.network import NetworkParameters
+from electrum_grs.network import NetworkParameters, ProxySettings
 from electrum_grs.plugin import Plugins
 from electrum_grs.wizard import ServerConnectWizard, NewWalletWizard
 from tests import ElectrumTestCase
@@ -88,7 +88,7 @@ class ServerConnectWizardTestCase(WizardTestCase):
         self.assertTrue(w.is_last_view(v.view, d))
 
         self.assertTrue(w._daemon.network.run_called)
-        self.assertEqual(NetworkParameters(server=None, proxy=d_proxy, auto_connect=True, oneserver=None), w._daemon.network.parameters)
+        self.assertEqual(NetworkParameters(server=None, proxy=ProxySettings.from_dict(d_proxy), auto_connect=True, oneserver=None), w._daemon.network.parameters)
 
     async def test_proxy_and_server(self):
         w = ServerConnectWizard(DaemonMock(self.config))

@@ -44,7 +44,7 @@ from electrum_grs.lnutil import LOCAL, REMOTE
 from electrum_grs.invoices import PR_PAID, PR_UNPAID
 from electrum_grs.interface import GracefulDisconnect
 from electrum_grs.simple_config import SimpleConfig
-
+from electrum_grs.fee_policy import FeeTimeEstimates
 
 
 from .test_lnchannel import create_test_channels
@@ -68,6 +68,7 @@ class MockNetwork:
         self.callbacks = defaultdict(list)
         self.lnwatcher = None
         self.interface = None
+        self.fee_estimates = FeeTimeEstimates()
         self.config = config
         self.asyncio_loop = util.get_asyncio_loop()
         self.channel_db = ChannelDB(self)
@@ -1247,7 +1248,7 @@ class TestPeerDirect(TestPeer):
         async def action():
             await util.wait_for2(p1.initialized, 1)
             await util.wait_for2(p2.initialized, 1)
-            await p1.send_warning(alice_channel.channel_id, 'be warned!', close_connection=True)
+            p1.send_warning(alice_channel.channel_id, 'be warned!', close_connection=True)
         gath = asyncio.gather(action(), p1._message_loop(), p2._message_loop(), p1.htlc_switch(), p2.htlc_switch())
         with self.assertRaises(GracefulDisconnect):
             await gath
@@ -1259,7 +1260,7 @@ class TestPeerDirect(TestPeer):
         async def action():
             await util.wait_for2(p1.initialized, 1)
             await util.wait_for2(p2.initialized, 1)
-            await p1.send_error(alice_channel.channel_id, 'some error happened!', force_close_channel=True)
+            p1.send_error(alice_channel.channel_id, 'some error happened!', force_close_channel=True)
             assert alice_channel.is_closed()
             gath.cancel()
         gath = asyncio.gather(action(), p1._message_loop(), p2._message_loop(), p1.htlc_switch(), p2.htlc_switch())
@@ -1282,10 +1283,8 @@ class TestPeerDirect(TestPeer):
         bob_channel.config[HTLCOwner.LOCAL].upfront_shutdown_script = b''
 
         p1, p2, w1, w2, q1, q2 = self.prepare_peers(alice_channel, bob_channel)
-        w1.network.config.FEE_EST_DYNAMIC = False
-        w2.network.config.FEE_EST_DYNAMIC = False
-        w1.network.config.FEE_EST_STATIC_FEERATE = 5000
-        w2.network.config.FEE_EST_STATIC_FEERATE = 1000
+        w1.network.config.FEE_POLICY = 'feerate:5000'
+        w2.network.config.FEE_POLICY = 'feerate:1000'
 
         async def test():
             async def close():
@@ -1316,10 +1315,8 @@ class TestPeerDirect(TestPeer):
         bob_channel.config[HTLCOwner.LOCAL].upfront_shutdown_script = bob_uss
 
         p1, p2, w1, w2, q1, q2 = self.prepare_peers(alice_channel, bob_channel)
-        w1.network.config.FEE_EST_DYNAMIC = False
-        w2.network.config.FEE_EST_DYNAMIC = False
-        w1.network.config.FEE_EST_STATIC_FEERATE = 5000
-        w2.network.config.FEE_EST_STATIC_FEERATE = 1000
+        w1.network.config.FEE_POLICY = 'feerate:5000'
+        w2.network.config.FEE_POLICY = 'feerate:1000'
 
         async def test():
             async def close():

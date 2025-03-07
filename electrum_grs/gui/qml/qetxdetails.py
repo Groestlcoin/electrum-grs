@@ -10,6 +10,7 @@ from electrum_grs.transaction import tx_from_any, Transaction, PartialTxInput, S
 from electrum_grs.network import Network
 from electrum_grs.address_synchronizer import TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_FUTURE
 from electrum_grs.wallet import TxSighashDanger
+from electrum_grs.fee_policy import FeePolicy
 
 from .qewallet import QEWallet
 from .qetypes import QEAmount
@@ -327,7 +328,7 @@ class QETxDetails(QObject, QtEventListener):
             self.update_mined_status(txinfo.tx_mined_status)
         else:
             if txinfo.tx_mined_status.height in [TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT]:
-                self._mempool_depth = self._wallet.wallet.config.depth_tooltip(txinfo.mempool_depth_bytes)
+                self._mempool_depth = FeePolicy.depth_tooltip(txinfo.mempool_depth_bytes)
                 self._in_mempool = True
             elif txinfo.tx_mined_status.height == TX_HEIGHT_FUTURE:
                 self._lock_delay = txinfo.tx_mined_status.wanted_height - self._wallet.wallet.adb.get_local_height()

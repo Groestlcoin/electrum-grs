@@ -59,7 +59,8 @@ from .util import (NotEnoughFunds, UserCancelled, profiler, OldTaskGroup, ignore
                    WalletFileException, BitcoinException,
                    InvalidPassword, format_time, timestamp_to_datetime, Satoshis,
                    Fiat, bfh, TxMinedInfo, quantize_feerate, OrderedDictWithIndex)
-from .simple_config import SimpleConfig, FEE_RATIO_HIGH_WARNING, FEERATE_WARNING_HIGH_FEE
+from .simple_config import SimpleConfig
+from .fee_policy import FeePolicy, FeeMethod, FEE_RATIO_HIGH_WARNING, FEERATE_WARNING_HIGH_FEE
 from .bitcoin import COIN, TYPE_ADDRESS
 from .bitcoin import is_address, address_to_script, is_minikey, relayfee, dust_threshold
 from .bitcoin import DummyAddress, DummyAddressUsedInTxException
@@ -177,30 +178,24 @@ async def sweep(
         privkeys: Iterable[str],
         *,
         network: 'Network',
-        config: 'SimpleConfig',
         to_address: str,
-        fee: int = None,
+        fee_policy: FeePolicy,
         imax=100,
         locktime=None,
         tx_version=None) -> PartialTransaction:
 
     inputs, keypairs = await sweep_preparations(privkeys, network, imax)
     total = sum(txin.value_sats() for txin in inputs)
-    if fee is None:
-        outputs = [PartialTxOutput(scriptpubkey=bitcoin.address_to_script(to_address),
-                                   value=total)]
-        tx = PartialTransaction.from_io(inputs, outputs)
-        fee = config.estimate_fee(tx.estimated_size())
+    outputs = [PartialTxOutput(scriptpubkey=bitcoin.address_to_script(to_address), value=total)]
+    tx = PartialTransaction.from_io(inputs, outputs)
+    fee = fee_policy.estimate_fee(tx.estimated_size(), network=network)
     if total - fee < 0:
         raise Exception(_('Not enough funds on address.') + '\nTotal: %d gro\nFee: %d'%(total, fee))
     if total - fee < dust_threshold(network):
-        raise Exception(_('Not enough funds on address.') + '\nTotal: %d gro\nFee: %d\nDust Threshold: %d'%(total, fee, dust_threshold(network)))
-
-    outputs = [PartialTxOutput(scriptpubkey=bitcoin.address_to_script(to_address),
-                               value=total - fee)]
+        raise Exception(_('Not enough funds on address.') + '\nTotal: %d gros\nFee: %d\nDust Threshold: %d'%(total, fee, dust_threshold(network)))
+    outputs = [PartialTxOutput(scriptpubkey=bitcoin.address_to_script(to_address), value=total - fee)]
     if locktime is None:
         locktime = get_locktime_for_new_transaction(network)
-
     tx = PartialTransaction.from_io(inputs, outputs, locktime=locktime, version=tx_version)
     tx.set_rbf(True)
     tx.sign(keypairs)
@@ -941,10 +936,10 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     status = _('Unconfirmed')
                     if fee is None:
                         fee = self.adb.get_tx_fee(tx_hash)
-                    if fee and self.network and self.config.has_fee_mempool():
+                    if fee and self.network and self.network.has_fee_mempool():
                         size = tx.estimated_size()
                         fee_per_byte = fee / size
-                        exp_n = self.config.fee_to_depth(fee_per_byte)
+                        exp_n = self.network.mempool_fees.fee_to_depth(fee_per_byte)
                     can_bump = (is_any_input_ismine or is_swap) and self.can_rbf_tx(tx)
                     can_dscancel = (is_any_input_ismine and self.can_rbf_tx(tx, is_dscancel=True)
                                     and not all([self.is_mine(txout.address) for txout in tx.outputs()]))
@@ -1398,6 +1393,10 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         # create groups
         transactions = OrderedDictWithIndex()
         for k, tx_item in sorted(list(transactions_tmp.items()), key=sort_key):
+            if 'ln_value' not in tx_item:
+                tx_item['ln_value'] = Satoshis(0)
+            if 'bc_value' not in tx_item:
+                tx_item['bc_value'] = Satoshis(0)
             group_id = tx_item.get('group_id')
             if not group_id:
                 transactions[k] = tx_item
@@ -1422,10 +1421,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                         'txid': '----',
                     }
                     transactions[key] = parent
-                if 'bc_value' in tx_item:
-                    parent['bc_value'] += tx_item['bc_value']
-                if 'ln_value' in tx_item:
-                    parent['ln_value'] += tx_item['ln_value']
+                parent['bc_value'] += tx_item['bc_value']
+                parent['ln_value'] += tx_item['ln_value']
                 parent['value'] = parent['bc_value'] + parent['ln_value']
                 if 'fiat_value' in tx_item:
                     parent['fiat_value'] += tx_item['fiat_value']
@@ -1695,10 +1692,10 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 fee_per_byte = fee / size
                 extra.append(format_fee_satoshis(fee_per_byte) + f" {util.UI_UNIT_NAME_FEERATE_SAT_PER_VB}")
             if fee is not None and height in (TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_UNCONFIRMED) \
-               and self.config.has_fee_mempool():
-                exp_n = self.config.fee_to_depth(fee_per_byte)
+               and self.network and self.network.has_fee_mempool():
+                exp_n = self.network.mempool_fees.fee_to_depth(fee_per_byte)
                 if exp_n is not None:
-                    extra.append(self.config.get_depth_mb_str(exp_n))
+                    extra.append(FeePolicy.get_depth_mb_str(exp_n))
             if height == TX_HEIGHT_LOCAL:
                 status = 3
             elif height == TX_HEIGHT_UNCONF_PARENT:
@@ -1721,16 +1718,17 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def dust_threshold(self):
         return dust_threshold(self.network)
 
-    def get_unconfirmed_base_tx_for_batching(self, outputs, coins) -> Optional[Transaction]:
-        candidate = None
+    def get_candidates_for_batching(self, outputs, coins) -> Sequence[Transaction]:
+        candidates = []
         domain = self.get_addresses()
         for hist_item in self.adb.get_history(domain):
             # tx should not be mined yet
             if hist_item.tx_mined_status.conf > 0: continue
             # conservative future proofing of code: only allow known unconfirmed types
-            if hist_item.tx_mined_status.height not in (TX_HEIGHT_UNCONFIRMED,
-                                                        TX_HEIGHT_UNCONF_PARENT,
-                                                        TX_HEIGHT_LOCAL):
+            if hist_item.tx_mined_status.height not in (
+                    TX_HEIGHT_UNCONFIRMED,
+                    TX_HEIGHT_UNCONF_PARENT,
+                    TX_HEIGHT_LOCAL):
                 continue
             # tx should be "outgoing" from wallet
             if hist_item.delta >= 0:
@@ -1756,12 +1754,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             output_amount = sum(o.value for o in outputs)
             if output_amount > remaining_amount + change_amount:
                 continue
-            # prefer txns already in mempool (vs local)
-            if hist_item.tx_mined_status.height == TX_HEIGHT_LOCAL:
-                candidate = tx
-                continue
-            return tx
-        return candidate
+            candidates.append(tx)
+        return candidates
 
     def get_change_addresses_for_new_transaction(
             self, preferred_change_addr=None, *, allow_reusing_used_change_addrs: bool = True,
@@ -1821,30 +1815,20 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         assert is_address(selected_addr), f"not valid groestlcoin address: {selected_addr}"
         return selected_addr
 
-    def can_pay_onchain(self, outputs, coins=None):
-        fee = partial(self.config.estimate_fee, allow_fallback_to_static_rates=True)  # to avoid NoDynamicFeeEstimates
-        try:
-            self.make_unsigned_transaction(
-                coins=coins,
-                outputs=outputs,
-                fee=fee)
-        except NotEnoughFunds:
-            return False
-        return True
-
     @profiler(min_threshold=0.1)
     def make_unsigned_transaction(
             self, *,
             coins: Sequence[PartialTxInput],
             outputs: List[PartialTxOutput],
             inputs: Optional[List[PartialTxInput]] = None,
-            fee=None,
+            fee_policy: FeePolicy = None,
             change_addr: str = None,
             is_sweep: bool = False,  # used by Wallet_2fa subclass
-            rbf: Optional[bool] = True,
+            rbf: bool = True,
             BIP69_sort: Optional[bool] = True,
             base_tx: Optional[PartialTransaction] = None,
-            send_change_to_lightning: Optional[bool] = None,
+            send_change_to_lightning: bool = False,
+            merge_duplicate_outputs: bool = False,
     ) -> PartialTransaction:
         """Can raise NotEnoughFunds or NoDynamicFeeEstimates."""
 
@@ -1857,10 +1841,6 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         if inputs:
             input_set = set(txin.prevout for txin in inputs)
             coins = [coin for coin in coins if (coin.prevout not in input_set)]
-        if base_tx is None and self.config.WALLET_BATCH_RBF:
-            base_tx = self.get_unconfirmed_base_tx_for_batching(outputs, coins)
-        if send_change_to_lightning is None:
-            send_change_to_lightning = self.config.WALLET_SEND_CHANGE_TO_LIGHTNING
 
         # prevent side-effect with '!'
         outputs = copy.deepcopy(outputs)
@@ -1874,23 +1854,12 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 i_max_sum += weight
                 i_max.append((weight, i))
 
-        if fee is None and self.config.fee_per_kb() is None:
-            raise NoDynamicFeeEstimates()
-
         for txin in coins:
             self.add_input_info(txin)
             nSequence = 0xffffffff - (2 if rbf else 1)
             txin.nsequence = nSequence
 
-        # Fee estimator
-        if fee is None:
-            fee_estimator = self.config.estimate_fee
-        elif isinstance(fee, Number):
-            fee_estimator = lambda size: fee
-        elif callable(fee):
-            fee_estimator = fee
-        else:
-            raise Exception(f'Invalid argument fee: {fee}')
+        fee_estimator = partial(fee_policy.estimate_fee, network=self.network)
 
         # set if we merge with another transaction
         rbf_merge_txid = None
@@ -1908,8 +1877,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     base_tx.add_info_from_wallet(self)
                 else:
                     # don't cast PartialTransaction, because it removes make_witness
-                    for txin in base_tx.inputs():
-                        txin.witness = None
+                    base_tx.remove_signatures()
                 base_tx_fee = base_tx.get_fee()
                 base_feerate = Decimal(base_tx_fee)/base_tx.estimated_size()
                 relayfeerate = Decimal(self.relayfee()) / 1000
@@ -1930,7 +1898,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 old_change_addrs = []
             # change address. if empty, coin_chooser will set it
             change_addrs = self.get_change_addresses_for_new_transaction(change_addr or old_change_addrs)
-            if self.config.WALLET_MERGE_DUPLICATE_OUTPUTS:
+            if merge_duplicate_outputs:
                 txo = transaction.merge_duplicate_tx_outputs(txo)
             tx = coin_chooser.make_tx(
                 coins=coins,
@@ -2215,7 +2183,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         for item in coins:
             self.add_input_info(item)
         def fee_estimator(size):
-            return self.config.estimate_fee_for_feerate(fee_per_kb=new_fee_rate*1000, size=size)
+            return FeePolicy.estimate_fee_for_feerate(fee_per_kb=new_fee_rate*1000, size=size)
         coin_chooser = coinchooser.get_coin_chooser(self.config)
         try:
             return coin_chooser.make_tx(
@@ -3098,44 +3066,38 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         pass
 
     def create_transaction(
-        self,
-        outputs,
-        *,
-        fee=None,
-        feerate=None,
-        change_addr=None,
-        domain_addr=None,
-        domain_coins=None,
-        sign=True,
-        rbf=True,
-        password=None,
-        locktime=None,
-        tx_version: Optional[int] = None,
-        base_tx: Optional[PartialTransaction] = None,
-        inputs: Optional[List[PartialTxInput]] = None,
-        send_change_to_lightning: Optional[bool] = None,
-        nonlocal_only: bool = False,
-        BIP69_sort: bool = True,
+            self,
+            outputs,
+            *,
+            fee_policy: FeePolicy=None,
+            change_addr=None,
+            domain_addr=None,
+            domain_coins=None,
+            sign=True,
+            rbf=True,
+            password=None,
+            locktime=None,
+            tx_version: Optional[int] = None,
+            base_tx: Optional[PartialTransaction] = None,
+            inputs: Optional[List[PartialTxInput]] = None,
+            send_change_to_lightning: Optional[bool] = None,
+            merge_duplicate_outputs: Optional[bool] = None,
+            nonlocal_only: bool = False,
+            BIP69_sort: bool = True,
     ) -> PartialTransaction:
         """Helper function for make_unsigned_transaction."""
-        if fee is not None and feerate is not None:
-            raise UserFacingException("Cannot specify both 'fee' and 'feerate' at the same time!")
         coins = self.get_spendable_coins(domain_addr, nonlocal_only=nonlocal_only)
         if domain_coins is not None:
             coins = [coin for coin in coins if (coin.prevout.to_str() in domain_coins)]
-        if feerate is not None:
-            fee_per_kb = 1000 * Decimal(feerate)
-            fee_estimator = partial(SimpleConfig.estimate_fee_for_feerate, fee_per_kb)
-        else:
-            fee_estimator = fee
         tx = self.make_unsigned_transaction(
             coins=coins,
             inputs=inputs,
             outputs=outputs,
-            fee=fee_estimator,
+            fee_policy=fee_policy,
             change_addr=change_addr,
             base_tx=base_tx,
             send_change_to_lightning=send_change_to_lightning,
+            merge_duplicate_outputs=merge_duplicate_outputs,
             rbf=rbf,
             BIP69_sort=BIP69_sort,
         )

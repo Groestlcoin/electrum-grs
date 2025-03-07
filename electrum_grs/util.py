@@ -67,7 +67,7 @@ from .i18n import _
 from .logging import get_logger, Logger
 
 if TYPE_CHECKING:
-    from .network import Network
+    from .network import Network, ProxySettings
     from .interface import Interface
     from .simple_config import SimpleConfig
     from .paymentrequest import PaymentRequest
@@ -1281,7 +1281,7 @@ def format_short_id(short_channel_id: Optional[bytes]):
         + 'x' + str(int.from_bytes(short_channel_id[6:], 'big'))
 
 
-def make_aiohttp_session(proxy: Optional[dict], headers=None, timeout=None):
+def make_aiohttp_session(proxy: Optional['ProxySettings'], headers=None, timeout=None):
     if headers is None:
         headers = {'User-Agent': 'Electrum-GRS'}
     if timeout is None:
@@ -1292,13 +1292,13 @@ def make_aiohttp_session(proxy: Optional[dict], headers=None, timeout=None):
         timeout = aiohttp.ClientTimeout(total=timeout)
     ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_path)
 
-    if proxy:
+    if proxy and proxy.enabled:
         connector = ProxyConnector(
-            proxy_type=ProxyType.SOCKS5 if proxy['mode'] == 'socks5' else ProxyType.SOCKS4,
-            host=proxy['host'],
-            port=int(proxy['port']),
-            username=proxy.get('user', None),
-            password=proxy.get('password', None),
+            proxy_type=ProxyType.SOCKS5 if proxy.mode == 'socks5' else ProxyType.SOCKS4,
+            host=proxy.host,
+            port=int(proxy.port),
+            username=proxy.user,
+            password=proxy.password,
             rdns=True,  # needed to prevent DNS leaks over proxy
             ssl=ssl_context,
         )
@@ -1515,32 +1515,51 @@ class NetworkJobOnDefaultServer(Logger, ABC):
         return s
 
 
-def detect_tor_socks_proxy() -> Optional[Tuple[str, int]]:
+async def detect_tor_socks_proxy() -> Optional[Tuple[str, int]]:
     # Probable ports for Tor to listen at
     candidates = [
         ("127.0.0.1", 9050),
+        ("127.0.0.1", 9051),
         ("127.0.0.1", 9150),
     ]
-    for net_addr in candidates:
-        if is_tor_socks_port(*net_addr):
-            return net_addr
-    return None
+
+    proxy_addr = None
+    async def test_net_addr(net_addr):
+        is_tor = await is_tor_socks_port(*net_addr)
+        # set result, and cancel remaining probes
+        if is_tor:
+            nonlocal proxy_addr
+            proxy_addr = net_addr
+            await group.cancel_remaining()
+
+    async with OldTaskGroup() as group:
+        for net_addr in candidates:
+            await group.spawn(test_net_addr(net_addr))
+    return proxy_addr
 
 
-def is_tor_socks_port(host: str, port: int) -> bool:
+@log_exceptions
+async def is_tor_socks_port(host: str, port: int) -> bool:
+    # mimic "tor-resolve 0.0.0.0".
+    # see https://github.com/spesmilo/electrum/issues/7317#issuecomment-1369281075
+    # > this is a socks5 handshake, followed by a socks RESOLVE request as defined in
+    # > [tor's socks extension spec](https://github.com/torproject/torspec/blob/7116c9cdaba248aae07a3f1d0e15d9dd102f62c5/socks-extensions.txt#L63),
+    # > resolving 0.0.0.0, which being an IP, tor resolves itself without needing to ask a relay.
+    writer = None
     try:
-        with socket.create_connection((host, port), timeout=10) as s:
-            # mimic "tor-resolve 0.0.0.0".
-            # see https://github.com/spesmilo/electrum/issues/7317#issuecomment-1369281075
-            # > this is a socks5 handshake, followed by a socks RESOLVE request as defined in
-            # > [tor's socks extension spec](https://github.com/torproject/torspec/blob/7116c9cdaba248aae07a3f1d0e15d9dd102f62c5/socks-extensions.txt#L63),
-            # > resolving 0.0.0.0, which being an IP, tor resolves itself without needing to ask a relay.
-            s.send(b'\x05\x01\x00\x05\xf0\x00\x03\x070.0.0.0\x00\x00')
-            if s.recv(1024) == b'\x05\x00\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00':
+        async with async_timeout(10):
+            reader, writer = await asyncio.open_connection(host, port)
+            writer.write(b'\x05\x01\x00\x05\xf0\x00\x03\x070.0.0.0\x00\x00')
+            await writer.drain()
+            data = await reader.read(1024)
+            if data == b'\x05\x00\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00':
                 return True
-    except socket.error:
-        pass
-    return False
+            return False
+    except (OSError, asyncio.TimeoutError):
+        return False
+    finally:
+        if writer:
+            writer.close()
 
 
 AS_LIB_USER_I_WANT_TO_MANAGE_MY_OWN_ASYNCIO_LOOP = False  # used by unit tests
@@ -1601,6 +1620,7 @@ def create_and_start_event_loop() -> Tuple[asyncio.AbstractEventLoop,
             _asyncio_event_loop = None
 
     loop.set_exception_handler(on_exception)
+    _set_custom_task_factory(loop)
     # loop.set_debug(True)
     stopping_fut = loop.create_future()
     loop_thread = threading.Thread(
@@ -1617,6 +1637,42 @@ def create_and_start_event_loop() -> Tuple[asyncio.AbstractEventLoop,
         if time.monotonic() - t0 > 5:
             raise Exception("been waiting for 5 seconds but asyncio loop would not start!")
     return loop, stopping_fut, loop_thread
+
+
+_running_asyncio_tasks = set()  # type: Set[asyncio.Future]
+def _set_custom_task_factory(loop: asyncio.AbstractEventLoop):
+    """Wrap task creation to track pending and running tasks.
+    When tasks are created, asyncio only maintains a weak reference to them.
+    Hence, the garbage collector might destroy the task mid-execution.
+    To avoid this, we store a strong reference for the task until it completes.
+
+    Without this, a lot of APIs are basically Heisenbug-generators... e.g.:
+    - "asyncio.create_task"
+    - "loop.create_task"
+    - "asyncio.ensure_future"
+    - what about "asyncio.run_coroutine_threadsafe"? not sure if that is safe.
+
+    related:
+        - https://bugs.python.org/issue44665
+        - https://github.com/python/cpython/issues/88831
+        - https://github.com/python/cpython/issues/91887
+        - https://textual.textualize.io/blog/2023/02/11/the-heisenbug-lurking-in-your-async-code/
+        - https://github.com/python/cpython/issues/91887#issuecomment-1434816045
+        - "Task was destroyed but it is pending!"
+    """
+
+    platform_task_factory = loop.get_task_factory()
+
+    def factory(loop_, coro, **kwargs):
+        if platform_task_factory is not None:
+            task = platform_task_factory(loop_, coro, **kwargs)
+        else:
+            task = asyncio.Task(coro, loop=loop_, **kwargs)
+        _running_asyncio_tasks.add(task)
+        task.add_done_callback(_running_asyncio_tasks.discard)
+        return task
+
+    loop.set_task_factory(factory)
 
 
 class OrderedDictWithIndex(OrderedDict):
@@ -1937,10 +1993,10 @@ class ESocksProxy(aiorpcx.SOCKSProxy):
 
     @classmethod
     def from_network_settings(cls, network: Optional['Network']) -> Optional['ESocksProxy']:
-        if not network or not network.proxy:
+        if not network or not network.proxy or not network.proxy.enabled:
             return None
         proxy = network.proxy
-        username, pw = proxy.get('user'), proxy.get('password')
+        username, pw = proxy.user, proxy.password
         if not username or not pw:
             # is_proxy_tor is tri-state; None indicates it is still probing the proxy to test for TOR
             if network.is_proxy_tor:
@@ -1949,10 +2005,10 @@ class ESocksProxy(aiorpcx.SOCKSProxy):
                 auth = None
         else:
             auth = aiorpcx.socks.SOCKSUserAuth(username, pw)
-        addr = aiorpcx.NetAddress(proxy['host'], proxy['port'])
-        if proxy['mode'] == "socks4":
+        addr = aiorpcx.NetAddress(proxy.host, proxy.port)
+        if proxy.mode == "socks4":
             ret = cls(addr, aiorpcx.socks.SOCKS4a, auth)
-        elif proxy['mode'] == "socks5":
+        elif proxy.mode == "socks5":
             ret = cls(addr, aiorpcx.socks.SOCKS5, auth)
         else:
             raise NotImplementedError  # http proxy not available with aiorpcx
