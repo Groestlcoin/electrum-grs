@@ -3,16 +3,16 @@ import logging
 from unittest import mock
 import asyncio
 
-from electrum import storage, bitcoin, keystore, wallet
-from electrum import Transaction
-from electrum import SimpleConfig
-from electrum import util
-from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_LOCAL
-from electrum.transaction import Transaction, PartialTxInput, PartialTxOutput, TxOutpoint
-from electrum.logging import console_stderr_handler, Logger
-from electrum.submarine_swaps import SwapManager, SwapData
-from electrum.lnsweep import SweepInfo
-from electrum.fee_policy import FeeTimeEstimates
+from electrum_grs import storage, bitcoin, keystore, wallet
+from electrum_grs import Transaction
+from electrum_grs import SimpleConfig
+from electrum_grs import util
+from electrum_grs.address_synchronizer import TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_LOCAL
+from electrum_grs.transaction import Transaction, PartialTxInput, PartialTxOutput, TxOutpoint
+from electrum_grs.logging import console_stderr_handler, Logger
+from electrum_grs.submarine_swaps import SwapManager, SwapData
+from electrum_grs.lnsweep import SweepInfo
+from electrum_grs.fee_policy import FeeTimeEstimates
 
 from . import ElectrumTestCase
 from .test_wallet_vertical import WalletIntegrityHelper

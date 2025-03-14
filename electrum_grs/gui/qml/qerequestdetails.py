@@ -6,7 +6,7 @@ from PyQt6.QtCore import pyqtProperty, pyqtSignal, pyqtSlot, QObject, QTimer, py
 from electrum_grs.logging import get_logger
 from electrum_grs.invoices import (PR_UNPAID, PR_EXPIRED, PR_UNKNOWN, PR_PAID, PR_INFLIGHT,
                                PR_FAILED, PR_ROUTING, PR_UNCONFIRMED, LN_EXPIRY_NEVER)
-from electrum.lnutil import MIN_FUNDING_SAT
+from electrum_grs.lnutil import MIN_FUNDING_SAT
 
 from .qewallet import QEWallet
 from .qetypes import QEAmount
