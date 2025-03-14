@@ -8,11 +8,12 @@ from PyQt6.QtCore import pyqtProperty, pyqtSignal, pyqtSlot, QObject
 
 from electrum_grs.i18n import _
 from electrum_grs.gui import messages
-from electrum_grs.util import bfh, NotEnoughFunds, NoDynamicFeeEstimates
+from electrum_grs.util import bfh
 from electrum_grs.lntransport import extract_nodeid, ConnStringFormatError
 from electrum_grs.bitcoin import DummyAddress
 from electrum_grs.lnworker import hardcoded_trampoline_nodes
 from electrum_grs.logging import get_logger
+from electrum_grs.fee_policy import FeePolicy
 
 from .auth import AuthMixin, auth_protect
 from .qetxfinalizer import QETxFinalizer
@@ -162,19 +163,20 @@ class QEChannelOpener(QObject, AuthMixin):
 
         lnworker = self._wallet.wallet.lnworker
         if lnworker.has_conflicting_backup_with(self._node_pubkey) and not confirm_backup_conflict:
-            self.conflictingBackup.emit(messages.MGS_CONFLICTING_BACKUP_INSTANCE)
+            self.conflictingBackup.emit(messages.MSG_CONFLICTING_BACKUP_INSTANCE)
             return
 
         amount = '!' if self._amount.isMax else self._amount.satsInt
         self._logger.debug('amount = %s' % str(amount))
 
         coins = self._wallet.wallet.get_spendable_coins(None, nonlocal_only=True)
+        fee_policy = FeePolicy(self._wallet.wallet.config.FEE_POLICY)
 
         mktx = lambda amt: lnworker.mktx_for_open_channel(
             coins=coins,
             funding_sat=amt,
             node_id=self._node_pubkey,
-            fee_est=None)
+            fee_policy=fee_policy)
 
         acpt = lambda tx: self.do_open_channel(tx, self._connect_str_resolved, self._wallet.password)
 
@@ -244,11 +246,11 @@ class QEChannelOpener(QObject, AuthMixin):
             try:
                 coins = self._wallet.wallet.get_spendable_coins(None, nonlocal_only=True)
                 dummy_nodeid = ecc.GENERATOR.get_public_key_bytes(compressed=True)
-                make_tx = lambda amt: self._wallet.wallet.lnworker.mktx_for_open_channel(
+                make_tx = lambda fee_policy: self._wallet.wallet.lnworker.mktx_for_open_channel(
                     coins=coins,
                     funding_sat='!',
                     node_id=dummy_nodeid,
-                    fee_est=None)
+                    fee_policy=fee_policy)
 
                 amount, message = self._wallet.determine_max(mktx=make_tx)
                 if amount is None:

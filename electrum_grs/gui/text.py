@@ -26,6 +26,7 @@ from electrum_grs.storage import WalletStorage
 from electrum_grs.network import NetworkParameters, TxBroadcastError, BestEffortRequestFailed, ProxySettings
 from electrum_grs.interface import ServerAddr
 from electrum_grs.invoices import Invoice
+from electrum_grs.fee_policy import FeePolicy
 
 if TYPE_CHECKING:
     from electrum_grs.daemon import Daemon
@@ -688,11 +689,12 @@ class ElectrumGui(BaseElectrumGui, EventListener):
                 return
         else:
             password = None
+        fee_policy = FeePolicy(self.config.FEE_POLICY)
         try:
             tx = self.wallet.create_transaction(
                 outputs=invoice.outputs,
                 password=password,
-                fee=None,
+                fee_policy=fee_policy,
             )
         except Exception as e:
             self.show_message(repr(e))

@@ -14,6 +14,7 @@ groestlcoin_cli="groestlcoin-cli -rpcuser=doggman -rpcpassword=donkey -rpcport=1
 
 function new_blocks()
 {
+    printf "mining $1 blocks\n"
     $groestlcoin_cli generatetoaddress $1 $($groestlcoin_cli getnewaddress) > /dev/null
 }
 
@@ -36,8 +37,8 @@ function wait_for_balance()
     cmd="./run_electrum_grs --regtest -D /tmp/$1"
     while balance=$($cmd getbalance | jq '[.confirmed, .unconfirmed] | to_entries | map(select(.value != null).value) | map(tonumber) | add ') && (( $(echo "$balance < $2" | bc -l) )); do
         sleep 1
-	msg="$msg."
-	printf "$msg\r"
+        msg="$msg."
+        printf "$msg\r"
     done
     printf "\n"
 }
@@ -48,8 +49,8 @@ function wait_until_channel_open()
     cmd="./run_electrum_grs --regtest -D /tmp/$1"
     while channel_state=$($cmd list_channels | jq '.[0] | .state' | tr -d '"') && [ $channel_state != "OPEN" ]; do
         sleep 1
-	msg="$msg."
-	printf "$msg\r"
+        msg="$msg."
+        printf "$msg\r"
     done
     printf "\n"
 }
@@ -60,8 +61,8 @@ function wait_until_channel_closed()
     cmd="./run_electrum_grs --regtest -D /tmp/$1"
     while [[ $($cmd list_channels | jq '.[0].state' | tr -d '"') != "CLOSED" ]]; do
         sleep 1
-	msg="$msg."
-	printf "$msg\r"
+        msg="$msg."
+        printf "$msg\r"
     done
     printf "\n"
 }
@@ -71,8 +72,8 @@ function wait_until_spent()
     msg="wait until $1:$2 is spent"
     while [[ $($groestlcoin_cli gettxout $1 $2) ]]; do
         sleep 1
-	msg="$msg."
-	printf "$msg\r"
+        msg="$msg."
+        printf "$msg\r"
     done
     printf "\n"
 }
@@ -251,6 +252,8 @@ if [[ $1 == "swapserver_forceclose" ]]; then
     new_blocks 1
     wait_until_spent $funding_txid 0 # alice reveals preimage
     new_blocks 1
+    sleep 2
+    new_blocks 144
     wait_for_balance bob 0.999
 fi
 
@@ -277,36 +280,65 @@ fi
 
 
 if [[ $1 == "extract_preimage" ]]; then
-    # instead of settling bob will broadcast
+    # Alice sends htlc1 to Bob.  Bob sends htlc2 to Alice.
+    # Neither one of them settles, they hold the htlcs, and Bob force-closes.
+    # Bob's ctx contains two htlc outputs: "received" htlc1, and "offered" htlc2.
+    # Bob also broadcasts an HTLC-success tx for received htlc1, revealing the preimage.
+    # Alice broadcasts a direct-spend of the offered htlc2, revealing the preimage.
+    # This test checks that
+    # - Alice successfully extracts the preimage for htlc1 from Bob's HTLC-success tx, and
+    # - Bob successfully extracts the preimage for htlc2 from Alice's direct spend tx
+    # note: actually, due to MPP, there will be more htlcs in the ctx:
+    #       we force alice to use MPP, but force bob NOT to use MPP
     $alice setconfig test_force_disable_mpp false
     $alice setconfig test_force_mpp true
+    $bob setconfig test_force_disable_mpp true
+    $bob setconfig test_force_mpp false
+    $alice enable_htlc_settle false
     $bob enable_htlc_settle false
     wait_for_balance alice 1
     echo "alice opens channel"
     bob_node=$($bob nodeid)
-    $alice open_channel $bob_node 0.15 --password=''
+    $alice open_channel $bob_node 0.15 --password='' --push_amount=0.075
     new_blocks 3
     wait_until_channel_open alice
     chan_id=$($alice list_channels | jq -r ".[0].channel_point")
     # alice pays bob
-    invoice=$($bob add_request 0.04 --lightning -m "test" | jq -r ".lightning_invoice")
-    screen -S alice_payment -dm -L -Logfile /tmp/alice/screen.log $alice lnpay $invoice --timeout=600
+    invoice1=$($bob add_request 0.04 --lightning -m "test1" | jq -r ".lightning_invoice")
+    screen -S alice_payment -dm -L -Logfile /tmp/alice/screen1.log $alice lnpay $invoice1 --timeout=600
     sleep 1
     unsettled=$($alice list_channels | jq '.[] | .local_unsettled_sent')
     if [[ "$unsettled" == "0" ]]; then
-        echo 'enable_htlc_settle did not work'
+        echo 'enable_htlc_settle did not work (bob settled)'
+        exit 1
+    fi
+    # bob pays alice
+    invoice2=$($alice add_request 0.04 --lightning -m "test2" | jq -r ".lightning_invoice")
+    screen -S bob_payment -dm -L -Logfile /tmp/bob/screen2.log $bob lnpay $invoice2 --timeout=600
+    sleep 1
+    unsettled=$($bob list_channels | jq '.[] | .local_unsettled_sent')
+    if [[ "$unsettled" == "0" ]]; then
+        echo 'enable_htlc_settle did not work (alice settled)'
         exit 1
     fi
     # bob force closes
     $bob close_channel $chan_id --force
     new_blocks 1
     wait_until_channel_closed bob
+    wait_until_channel_closed alice
     sleep 5
-    success=$(cat /tmp/alice/screen.log | jq -r ".success")
-    if [[ "$success" != "true" ]]; then
-        exit 1
-    fi
-    cat /tmp/alice/screen.log
+    # check logs
+    alice_log_found=$(grep -rnw "/tmp/alice/regtest/logs/" -e "found preimage in witness of length 5" | wc -l)
+    bob_log_found=$(grep -rnw "/tmp/bob/regtest/logs/" -e "found preimage in witness of length 3" | wc -l)
+    if [[ "$alice_log_found" != "1" ]]; then exit 1; fi
+    if [[ "$bob_log_found" != "1" ]]; then exit 1; fi
+    # check both "lnpay" commands succeeded
+    success=$(cat /tmp/alice/screen1.log | jq -r ".success")
+    if [[ "$success" != "true" ]]; then exit 1; fi
+    success=$(cat /tmp/bob/screen2.log | jq -r ".success")
+    if [[ "$success" != "true" ]]; then exit 1; fi
+    cat /tmp/alice/screen1.log
+    cat /tmp/bob/screen2.log
 fi
 
 
@@ -377,6 +409,7 @@ if [[ $1 == "breach_with_unspent_htlc" ]]; then
     fi
     echo "alice breaches with old ctx"
     $groestlcoin_cli sendrawtransaction $ctx
+    new_blocks 1
     wait_for_balance bob 1.14
 fi
 
@@ -479,6 +512,42 @@ if [[ $1 == "watchtower" ]]; then
         output_index=1
     fi
     wait_until_spent $ctx_id $output_index  # alice's to_local gets punished
+fi
+
+if [[ $1 == "fw_fail_htlc" ]]; then
+    $carol enable_htlc_settle false
+    bob_node=$($bob nodeid)
+    wait_for_balance carol 1
+    echo "alice and carol open channels with bob"
+    chan_id1=$($alice open_channel $bob_node 0.15 --password='' --push_amount=0.075)
+    chan_id2=$($carol open_channel $bob_node 0.15 --password='' --push_amount=0.075)
+    new_blocks 3
+    wait_until_channel_open alice
+    wait_until_channel_open carol
+    echo "alice pays carol"
+    invoice=$($carol add_request 0.01 --lightning -m "invoice" | jq -r ".lightning_invoice")
+    screen -S alice_payment -dm -L -Logfile /tmp/alice/screen1.log $alice lnpay $invoice --timeout=600
+    sleep 1
+    unsettled=$($alice list_channels | jq '.[] | .local_unsettled_sent')
+    if [[ "$unsettled" == "0" ]]; then
+        echo 'enable_htlc_settle did not work (carol settled)'
+        exit 1
+    fi
+    $carol stop
+    $bob close_channel $chan_id2 --force
+    new_blocks 1
+    sleep 1
+    new_blocks 150 # cltv before bob can broadcast
+    sleep 5        # give bob time to process blocks and broadcast
+    new_blocks 1   # confirm 2nd stage.
+    sleep 1
+    new_blocks 100 # deep
+    sleep 5        # give bob time to fail incoming htlc
+    unsettled=$($alice list_channels | jq '.[] | .local_unsettled_sent')
+    if [[ "$unsettled" != "0" ]]; then
+        echo 'alice htlc was not failed'
+        exit 1
+    fi
 fi
 
 if [[ $1 == "just_in_time" ]]; then

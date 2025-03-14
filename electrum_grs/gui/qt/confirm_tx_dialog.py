@@ -182,7 +182,7 @@ class TxEditor(WindowModalDialog):
         self.feerate_e.textChanged.connect(self.entry_changed)
 
         self.fee_target = QLabel('')
-        self.fee_slider = FeeSlider(self, self.fee_policy, self.fee_slider_callback)
+        self.fee_slider = FeeSlider(parent=self, network=self.network, fee_policy=self.fee_policy, callback=self.fee_slider_callback)
         self.fee_combo = FeeComboBox(self.fee_slider)
         self.fee_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
@@ -426,6 +426,7 @@ class TxEditor(WindowModalDialog):
         add_cv_action(self.config.cv.WALLET_MERGE_DUPLICATE_OUTPUTS, self.toggle_merge_duplicate_outputs)
         add_cv_action(self.config.cv.WALLET_SPEND_CONFIRMED_ONLY, self.toggle_confirmed_only)
         add_cv_action(self.config.cv.WALLET_COIN_CHOOSER_OUTPUT_ROUNDING, self.toggle_output_rounding)
+        add_cv_action(self.config.cv.WALLET_FREEZE_REUSED_ADDRESS_UTXOS, self.toggle_freeze_reused_address_utxos)
         self.pref_button = QToolButton()
         self.pref_button.setIcon(read_QIcon("preferences.png"))
         self.pref_button.setMenu(self.pref_menu)
@@ -447,6 +448,13 @@ class TxEditor(WindowModalDialog):
         b = not self.config.WALLET_COIN_CHOOSER_OUTPUT_ROUNDING
         self.config.WALLET_COIN_CHOOSER_OUTPUT_ROUNDING = b
         self.trigger_update()
+
+    def toggle_freeze_reused_address_utxos(self):
+        b = not self.config.WALLET_FREEZE_REUSED_ADDRESS_UTXOS
+        self.config.WALLET_FREEZE_REUSED_ADDRESS_UTXOS = b
+        self.trigger_update()
+        self.main_window.utxo_list.refresh_all()  # for coin frozen status
+        self.main_window.update_status()  # frozen balance
 
     def toggle_use_change(self):
         self.wallet.use_change = not self.wallet.use_change
@@ -535,8 +543,9 @@ class TxEditor(WindowModalDialog):
                 self.error += ' ' + _('Change your settings to allow spending unconfirmed coins.')
             elif self.can_pay_assuming_zero_fees(confirmed_only=confirmed_only):
                 self.error += ' ' + _('You need to set a lower fee.')
-            else:
-                self.error += ''
+            elif frozen_bal := self.wallet.get_frozen_balance_str():
+                # FIXME only show if unfreezing would fix "not enough funds"
+                self.error += ' ' + _("Some coins are frozen: {} (can be unfrozen in the Addresses or in the Coins tab)").format(frozen_bal)
         if not self.tx:
             if self.not_enough_funds:
                 self.io_widget.update(None)
@@ -616,6 +625,9 @@ class TxEditor(WindowModalDialog):
         self.preview_button.setEnabled(enabled)
         self.ok_button.setEnabled(enabled)
 
+    def can_pay_assuming_zero_fees(self, confirmed_only: bool) -> bool:
+        raise NotImplementedError
+
 
 class ConfirmTxDialog(TxEditor):
     help_text = ''  #_('Set the mining fee of your transaction')
@@ -681,7 +693,7 @@ class ConfirmTxDialog(TxEditor):
             raise
         self.tx.set_rbf(True)
 
-    def can_pay_assuming_zero_fees(self, confirmed_only) -> bool:
+    def can_pay_assuming_zero_fees(self, confirmed_only: bool) -> bool:
         # called in send_tab.py
         try:
             tx = self.make_tx(FixedFeePolicy(0), confirmed_only=confirmed_only, base_tx=None)

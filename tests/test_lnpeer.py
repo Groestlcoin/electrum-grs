@@ -108,8 +108,12 @@ class MockBlockchain:
 
 
 class MockADB:
+    def __init__(self):
+        self._blockchain = MockBlockchain()
     def add_transaction(self, tx):
         pass
+    def get_local_height(self):
+        return self._blockchain.height()
 
 class MockWallet:
     receive_requests = {}
@@ -198,6 +202,7 @@ class MockLNWallet(Logger, EventListener, NetworkRetryManager[LNPeerAddr]):
         self.preimages = {}
         self.stopping_soon = False
         self.downstream_to_upstream_htlc = {}
+        self.dont_settle_htlcs = {}
         self.hold_invoice_callbacks = {}
         self.payment_bundles = [] # lists of hashes. todo:persist
         self.config.INITIAL_TRAMPOLINE_FEE_LEVEL = 0

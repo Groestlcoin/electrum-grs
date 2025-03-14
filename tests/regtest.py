@@ -2,8 +2,11 @@ import os
 import sys
 import unittest
 import subprocess
+from typing import Mapping, Any
+
 
 class TestLightning(unittest.TestCase):
+    agents: Mapping[str, Mapping[str, Any]]
 
     @staticmethod
     def run_shell(args, timeout=30):
@@ -44,6 +47,8 @@ class TestUnixSockets(TestLightning):
 class TestLightningAB(TestLightning):
     agents = {
         'alice': {
+            'test_force_disable_mpp': 'false',
+            'test_force_mpp': 'true',
         },
         'bob': {
             'lightning_listen': 'localhost:9735',
@@ -103,13 +108,13 @@ class TestLightningSwapserver(TestLightning):
 
 class TestLightningWatchtower(TestLightning):
     agents = {
-        'alice':{
+        'alice': {
         },
-        'bob':{
+        'bob': {
             'lightning_listen': 'localhost:9735',
             'watchtower_url': 'http://wtuser:wtpassword@127.0.0.1:12345',
         },
-        'carol':{
+        'carol': {
             'enable_plugin_watchtower': 'true',
             'watchtower_user': 'wtuser',
             'watchtower_password': 'wtpassword',
@@ -121,17 +126,33 @@ class TestLightningWatchtower(TestLightning):
         self.run_shell(['watchtower'])
 
 
+class TestLightningABC(TestLightning):
+    agents = {
+        'alice': {
+        },
+        'bob': {
+            'lightning_listen': 'localhost:9735',
+            'lightning_forward_payments': 'true',
+        },
+        'carol': {
+        }
+    }
+
+    def test_fw_fail_htlc(self):
+        self.run_shell(['fw_fail_htlc'])
+
+
 class TestLightningJIT(TestLightning):
     agents = {
-        'alice':{
+        'alice': {
             'accept_zeroconf_channels': 'true',
         },
-        'bob':{
+        'bob': {
             'lightning_listen': 'localhost:9735',
             'lightning_forward_payments': 'true',
             'accept_zeroconf_channels': 'true',
         },
-        'carol':{
+        'carol': {
         }
     }
 
@@ -141,17 +162,17 @@ class TestLightningJIT(TestLightning):
 
 class TestLightningJITTrampoline(TestLightningJIT):
     agents = {
-        'alice':{
+        'alice': {
             'use_gossip': 'false',
             'accept_zeroconf_channels': 'true',
         },
-        'bob':{
+        'bob': {
             'lightning_listen': 'localhost:9735',
             'lightning_forward_payments': 'true',
             'lightning_forward_trampoline_payments': 'true',
             'accept_zeroconf_channels': 'true',
         },
-        'carol':{
+        'carol': {
             'use_gossip': 'false',
         }
     }

@@ -605,6 +605,13 @@ class SimpleConfig(Logger):
         short_desc=lambda: _('Send change to Lightning'),
         long_desc=lambda: _('If possible, send the change of this transaction to your channels, with a submarine swap'),
     )
+    WALLET_FREEZE_REUSED_ADDRESS_UTXOS = ConfigVar(
+        'wallet_freeze_reused_address_utxos', default=False, type_=bool,
+        short_desc=lambda: _('Avoid spending from used addresses'),
+        long_desc=lambda: _("""Automatically freeze coins received to already used addresses.
+This can eliminate a serious privacy issue where a malicious user can track your spends by sending small payments
+to a previously-paid address of yours that would then be included with unrelated inputs in your future payments."""),
+    )
 
     FX_USE_EXCHANGE_RATE = ConfigVar('use_exchange_rate', default=False, type_=bool)
     FX_CURRENCY = ConfigVar('currency', default='EUR', type_=str)
@@ -675,7 +682,9 @@ Warning: setting this to too low will result in lots of payment failures."""),
     TEST_SHUTDOWN_FEE_RANGE = ConfigVar('test_shutdown_fee_range', default=None)
     TEST_SHUTDOWN_LEGACY = ConfigVar('test_shutdown_legacy', default=False, type_=bool)
 
-    FEE_POLICY = ConfigVar('fee_policy', default='eta:2', type_=str)
+    FEE_POLICY = ConfigVar('fee_policy', default='eta:2', type_=str) # exposed to GUI
+    FEE_POLICY_LIGHTNING = ConfigVar('fee_policy_lightning', default='eta:2', type_=str) # for txbatcher (sweeping)
+    FEE_POLICY_SWAPS = ConfigVar('fee_policy_swaps', default='eta:2', type_=str) # for txbatcher (sweeping and sending if we are a swapserver)
 
     RPC_USERNAME = ConfigVar('rpcuser', default=None, type_=str)
     RPC_PASSWORD = ConfigVar('rpcpassword', default=None, type_=str)

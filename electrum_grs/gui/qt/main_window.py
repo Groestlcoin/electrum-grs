@@ -462,6 +462,11 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.console.showMessage(args[0])
 
     @qt_event_listener
+    def on_event_adb_set_future_tx(self, adb, txid):
+        if adb == self.wallet.adb:
+            self.history_model.refresh('set_future_tx')
+
+    @qt_event_listener
     def on_event_verified(self, *args):
         wallet, tx_hash, tx_mined_status = args
         if wallet == self.wallet:
@@ -1388,7 +1393,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         def make_tx(fee_policy, *, confirmed_only=False, base_tx=None):
             assert base_tx is None
             return self.wallet.lnworker.mktx_for_open_channel(
-                coins = self.get_coins(nonlocal_only=True, confirmed_only=confirmed_only),
+                coins=self.get_coins(nonlocal_only=True, confirmed_only=confirmed_only),
                 funding_sat=funding_sat,
                 node_id=node_id,
                 fee_policy=fee_policy)
@@ -1401,7 +1406,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             self.show_error(str(e))
             return
         if self.wallet.lnworker.has_conflicting_backup_with(node_id):
-            msg = messages.MGS_CONFLICTING_BACKUP_INSTANCE
+            msg = messages.MSG_CONFLICTING_BACKUP_INSTANCE
             if not self.question(msg):
                 return
         # we need to know the fee before we broadcast, because the txid is required
@@ -1413,11 +1418,11 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
     def confirm_tx_dialog(self, make_tx, output_value, allow_preview=True, batching_candidates=None):
         d = ConfirmTxDialog(window=self, make_tx=make_tx, output_value=output_value, allow_preview=allow_preview, batching_candidates=batching_candidates)
-        if d.not_enough_funds:
+        if d.not_enough_funds:  # FIXME this check looks broken?
             # note: use confirmed_only=False here, regardless of config setting,
             #       as the user needs to get to ConfirmTxDialog to change the config setting
             if not d.can_pay_assuming_zero_fees(confirmed_only=False):
-                text = self.send_tab.get_text_not_enough_funds_mentioning_frozen()
+                text = self.wallet.get_text_not_enough_funds_mentioning_frozen()
                 self.show_message(text)
                 return
         return d.run(), d.is_preview
@@ -2704,7 +2709,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         def on_rate(fee_rate):
             fee = get_child_fee_from_total_feerate(fee_rate)
             fee_e.setAmount(fee)
-        fee_slider = FeeSlider(self, fee_policy, on_rate)
+        fee_slider = FeeSlider(parent=self, network=self.network, fee_policy=fee_policy, callback=on_rate)
         fee_combo = FeeComboBox(fee_slider)
         fee_slider.update()
         grid.addWidget(fee_slider, 4, 1)

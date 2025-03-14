@@ -15,6 +15,7 @@ from electrum_grs.network import TxBroadcastError, BestEffortRequestFailed
 from electrum_grs.transaction import PartialTransaction, Transaction
 from electrum_grs.util import InvalidPassword, event_listener, AddTransactionException, get_asyncio_loop, NotEnoughFunds, \
     NoDynamicFeeEstimates
+from electrum_grs.lnutil import MIN_FUNDING_SAT
 from electrum_grs.plugin import run_hook
 from electrum_grs.wallet import Multisig_Wallet
 from electrum_grs.crypto import pw_decode_with_version_and_mac
@@ -26,6 +27,8 @@ from .qeinvoicelistmodel import QEInvoiceListModel, QERequestListModel
 from .qetransactionlistmodel import QETransactionListModel
 from .qetypes import QEAmount
 from .util import QtEventListener, qt_event_listener
+from ...lntransport import extract_nodeid
+from ...fee_policy import FeePolicy
 
 if TYPE_CHECKING:
     from electrum_grs.wallet import Abstract_Wallet
@@ -100,6 +103,7 @@ class QEWallet(AuthMixin, QObject, QtEventListener):
         self._frozenbalance = QEAmount()
         self._totalbalance = QEAmount()
         self._lightningcanreceive = QEAmount()
+        self._minchannelfunding = QEAmount(amount_sat=int(MIN_FUNDING_SAT))
         self._lightningcansend = QEAmount()
         self._lightningbalancefrozen = QEAmount()
 
@@ -458,6 +462,11 @@ class QEWallet(AuthMixin, QObject, QtEventListener):
     def canSignMessage(self):
         return not isinstance(self.wallet, Multisig_Wallet) and not self.wallet.is_watching_only()
 
+    canGetZeroconfChannelChanged = pyqtSignal()
+    @pyqtProperty(bool, notify=canGetZeroconfChannelChanged)
+    def canGetZeroconfChannel(self) -> bool:
+        return self.wallet.lnworker and self.wallet.lnworker.can_get_zeroconf_channel()
+
     @pyqtProperty(QEAmount, notify=balanceChanged)
     def frozenBalance(self):
         c, u, x = self.wallet.get_frozen_balance()
@@ -504,6 +513,10 @@ class QEWallet(AuthMixin, QObject, QtEventListener):
         if self.isLightning:
             self._lightningcanreceive.satsInt = int(self.wallet.lnworker.num_sats_can_receive())
         return self._lightningcanreceive
+
+    @pyqtProperty(QEAmount, notify=dataChanged)
+    def minChannelFunding(self):
+        return self._minchannelfunding
 
     @pyqtProperty(int, notify=peersUpdated)
     def lightningNumPeers(self):
@@ -820,16 +833,18 @@ class QEWallet(AuthMixin, QObject, QtEventListener):
         sig = self.wallet.sign_message(address, message, self.password)
         return base64.b64encode(sig).decode('ascii')
 
-    def determine_max(self, *, mktx: Callable[[Optional[int]], PartialTransaction]) -> Tuple[Optional[int], Optional[str]]:
+    def determine_max(self, *, mktx: Callable[[FeePolicy], PartialTransaction]) -> Tuple[Optional[int], Optional[str]]:
         # TODO: merge with SendTab.spend_max() and move to backend wallet
         amount = message = None
         try:
             try:
-                tx = mktx(None)
+                fee_policy = FeePolicy(self.wallet.config.FEE_POLICY)
+                tx = mktx(fee_policy)
             except (NotEnoughFunds, NoDynamicFeeEstimates) as e:
                 # Check if we had enough funds excluding fees,
                 # if so, still provide opportunity to set lower fees.
-                tx = mktx(0)
+                fee_policy = FeePolicy('fixed:0')
+                tx = mktx(fee_policy)
             amount = tx.output_value()
         except NotEnoughFunds as e:
             self._logger.debug(str(e))

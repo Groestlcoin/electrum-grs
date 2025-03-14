@@ -1,5 +1,5 @@
 from typing import TYPE_CHECKING, Optional
-from PyQt6.QtWidgets import QLabel, QVBoxLayout, QGridLayout, QPushButton, QComboBox, QLineEdit, QSpacerItem, QWidget, QHBoxLayout
+from PyQt6.QtWidgets import QLabel, QVBoxLayout, QGridLayout, QPushButton, QComboBox, QLineEdit, QHBoxLayout
 
 import electrum_ecc as ecc
 
@@ -7,6 +7,7 @@ from electrum_grs.i18n import _
 from electrum_grs.lnutil import MIN_FUNDING_SAT
 from electrum_grs.lnworker import hardcoded_trampoline_nodes
 from electrum_grs.util import NotEnoughFunds, NoDynamicFeeEstimates
+from electrum_grs.fee_policy import FeePolicy
 
 from .util import (WindowModalDialog, Buttons, OkButton, CancelButton,
                    EnterButton, WWLabel, char_width_in_lineedit)
@@ -119,7 +120,7 @@ class NewChannelDialog(WindowModalDialog):
         dummy_nodeid = ecc.GENERATOR.get_public_key_bytes(compressed=True)
         make_tx = self.window.mktx_for_open_channel(funding_sat='!', node_id=dummy_nodeid)
         try:
-            tx = make_tx(None)
+            tx = make_tx(FeePolicy(self.config.FEE_POLICY))
         except (NotEnoughFunds, NoDynamicFeeEstimates) as e:
             self.max_button.setChecked(False)
             self.amount_e.setFrozen(False)

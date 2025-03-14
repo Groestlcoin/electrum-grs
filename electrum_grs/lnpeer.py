@@ -1161,6 +1161,7 @@ class Peer(Logger, EventListener):
         )
         chan.storage['funding_inputs'] = [txin.prevout.to_json() for txin in funding_tx.inputs()]
         chan.storage['has_onchain_backup'] = has_onchain_backup
+        chan.storage['init_timestamp'] = int(time.time())
         if isinstance(self.transport, LNTransport):
             chan.add_or_update_peer_addr(self.transport.peer_addr)
         sig_64, _ = chan.sign_next_commitment()
@@ -2146,6 +2147,7 @@ class Peer(Logger, EventListener):
         except BaseException as e:
             log_fail_reason(f"error sending message to next_peer={next_chan.node_id.hex()}")
             raise OnionRoutingFailure(code=OnionFailureCode.TEMPORARY_CHANNEL_FAILURE, data=outgoing_chan_upd_message)
+
         htlc_key = serialize_htlc_key(next_chan.get_scid_or_local_alias(), next_htlc.htlc_id)
         return htlc_key
 
@@ -2499,6 +2501,9 @@ class Peer(Logger, EventListener):
                 raise exc_incorrect_or_unknown_pd
             else:
                 return None, None
+
+        if payment_hash.hex() in self.lnworker.dont_settle_htlcs:
+            return None, None
 
         chan.opening_fee = None
         self.logger.info(f"maybe_fulfill_htlc. will FULFILL HTLC: chan {chan.short_channel_id}. htlc={str(htlc)}")
