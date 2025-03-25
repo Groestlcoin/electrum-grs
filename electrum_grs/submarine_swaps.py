@@ -26,7 +26,8 @@ from .bitcoin import (script_to_p2wsh, opcodes,
 from .transaction import PartialTxInput, PartialTxOutput, PartialTransaction, Transaction, TxInput, TxOutpoint
 from .transaction import script_GetOp, match_script_against_template, OPPushDataGeneric, OPPushDataPubkey
 from .util import (log_exceptions, ignore_exceptions, BelowDustLimit, OldTaskGroup, age, ca_path,
-                   gen_nostr_ann_pow, get_nostr_ann_pow_amount)
+                   gen_nostr_ann_pow, get_nostr_ann_pow_amount, make_aiohttp_proxy_connector, get_running_loop,
+                   get_asyncio_loop)
 from .lnutil import REDEEM_AFTER_DOUBLE_SPENT_DELAY
 from .bitcoin import dust_threshold, DummyAddress
 from .logging import Logger
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
     from .lnworker import LNWallet
     from .lnchannel import Channel
     from .simple_config import SimpleConfig
+    from aiohttp_socks import ProxyConnector
 
 
 
@@ -153,7 +155,6 @@ class SwapData(StoredObject):
 
     _funding_prevout = None  # type: Optional[TxOutpoint]  # for RBF
     _payment_hash = None
-    _zeroconf = False
     _payment_pending = False # for forward swaps
 
     @property
@@ -273,7 +274,7 @@ class SwapManager(Logger):
         self.invoices_to_pay[key] = 1000000000000 # lock
         try:
             invoice = self.wallet.get_invoice(key)
-            success, log = await self.lnworker.pay_invoice(invoice.lightning_invoice, attempts=10)
+            success, log = await self.lnworker.pay_invoice(invoice, attempts=10)
         except Exception as e:
             self.logger.info(f'exception paying {key}, will not retry')
             self.invoices_to_pay.pop(key, None)
@@ -409,7 +410,7 @@ class SwapManager(Logger):
                 return
             txin, locktime = self.create_claim_txin(txin=txin, swap=swap)
             # note: there is no csv in the script, we just set this so that txbatcher waits for one confirmation
-            csv = 1 if (swap.is_reverse and not swap._zeroconf) else 0
+            csv = 1 if swap.is_reverse else 0
             name = 'swap claim' if swap.is_reverse else 'swap refund'
             can_be_batched = bool(csv) if swap.is_reverse else True
             sweep_info = SweepInfo(
@@ -683,8 +684,6 @@ class SwapManager(Logger):
         }
         data = await transport.send_request_to_server('createnormalswap', request_data)
         payment_hash = bytes.fromhex(data["preimageHash"])
-
-        zeroconf = data["acceptZeroConf"]
         onchain_amount = data["expectedAmount"]
         locktime = data["timeoutBlockHeight"]
         lockup_address = data["address"]
@@ -771,16 +770,15 @@ class SwapManager(Logger):
         # this is taken care of in wallet._is_rbf_allowed_to_touch_tx_output
         if tx is None:
             funding_output = self.create_funding_output(swap)
-            tx = self.wallet.create_transaction(
+            tx = self.wallet.make_unsigned_transaction(
                 outputs=[funding_output],
                 rbf=True,
-                password=password,
                 fee_policy=fee_policy,
             )
         else:
             tx.replace_output_address(DummyAddress.SWAP, swap.lockup_address)
             tx.set_rbf(True)
-            self.wallet.sign_transaction(tx, password)
+        self.wallet.sign_transaction(tx, password)
         return tx
 
     @log_exceptions
@@ -803,7 +801,6 @@ class SwapManager(Logger):
             *,
             lightning_amount_sat: int,
             expected_onchain_amount_sat: int,
-            zeroconf: bool=False,
             channels: Optional[Sequence['Channel']] = None,
     ) -> Optional[str]:
         """send on Lightning, receive on-chain
@@ -862,13 +859,13 @@ class SwapManager(Logger):
         if locktime - self.network.get_local_height() <= MIN_LOCKTIME_DELTA:
             raise Exception("rswap check failed: locktime too close")
         # verify invoice payment_hash
-        lnaddr = self.lnworker._check_invoice(invoice)
+        lnaddr = self.lnworker._check_bolt11_invoice(invoice)
         invoice_amount = int(lnaddr.get_amount_sat())
         if lnaddr.paymenthash != payment_hash:
             raise Exception("rswap check failed: inconsistent RHASH and invoice")
         # check that the lightning amount is what we requested
         if fee_invoice:
-            fee_lnaddr = self.lnworker._check_invoice(fee_invoice)
+            fee_lnaddr = self.lnworker._check_bolt11_invoice(fee_invoice)
             invoice_amount += fee_lnaddr.get_amount_sat()
             prepay_hash = fee_lnaddr.paymenthash
         else:
@@ -886,16 +883,17 @@ class SwapManager(Logger):
             prepay_hash=prepay_hash,
             onchain_amount_sat=onchain_amount,
             lightning_amount_sat=lightning_amount_sat)
-        swap._zeroconf = zeroconf
         # initiate fee payment.
         if fee_invoice:
-            asyncio.ensure_future(self.lnworker.pay_invoice(fee_invoice))
+            fee_invoice_obj = Invoice.from_bech32(fee_invoice)
+            asyncio.ensure_future(self.lnworker.pay_invoice(fee_invoice_obj))
         # we return if we detect funding
         async def wait_for_funding(swap):
             while swap.funding_txid is None:
                 await asyncio.sleep(1)
         # initiate main payment
-        tasks = [asyncio.create_task(self.lnworker.pay_invoice(invoice, channels=channels)), asyncio.create_task(wait_for_funding(swap))]
+        invoice_obj = Invoice.from_bech32(invoice)
+        tasks = [asyncio.create_task(self.lnworker.pay_invoice(invoice_obj, channels=channels)), asyncio.create_task(wait_for_funding(swap))]
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         return swap.funding_txid
 
@@ -1102,7 +1100,6 @@ class SwapManager(Logger):
         response = {
             "id": swap.payment_hash.hex(),
             'preimageHash': swap.payment_hash.hex(),
-            "acceptZeroConf": False,
             "expectedAmount": swap.onchain_amount,
             "timeoutBlockHeight": swap.locktime,
             "address": swap.lockup_address,
@@ -1187,6 +1184,7 @@ class SwapManager(Logger):
                         'group_label': group_label,
                         'label': _('Refund transaction'),
                     }
+                    self.wallet._accounting_addresses.add(swap.lockup_address)
         return d
 
     def get_group_id_for_payment_hash(self, payment_hash):
@@ -1265,9 +1263,9 @@ class NostrTransport(SwapServerTransport):
     #  - for client-server RPCs (using DMs)
     #     (todo: we should use onion messages for that)
 
-    NOSTR_DM = 4
+    EPHEMERAL_REQUEST = 25582
     USER_STATUS_NIP38 = 30315
-    NOSTR_EVENT_VERSION = 3
+    NOSTR_EVENT_VERSION = 4
     OFFER_UPDATE_INTERVAL_SEC = 60 * 10
 
     def __init__(self, config, sm, keypair):
@@ -1277,8 +1275,8 @@ class NostrTransport(SwapServerTransport):
         self.nostr_private_key = to_nip19('nsec', keypair.privkey.hex())
         self.nostr_pubkey = keypair.pubkey.hex()[2:]
         self.dm_replies = defaultdict(asyncio.Future)  # type: Dict[bytes, asyncio.Future]
-        ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_path)
-        self.relay_manager = aionostr.Manager(self.relays, private_key=self.nostr_private_key, log=self.logger, ssl_context=ssl_context)
+        self.ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_path)
+        self.relay_manager = None
         self.taskgroup = OldTaskGroup()
         self.server_relays = None
 
@@ -1294,6 +1292,7 @@ class NostrTransport(SwapServerTransport):
     async def main_loop(self):
         self.logger.info(f'starting nostr transport with pubkey: {self.nostr_pubkey}')
         self.logger.info(f'nostr relays: {self.relays}')
+        self.relay_manager = self.get_relay_manager()
         await self.relay_manager.connect()
         connected_relays = self.relay_manager.relays
         self.logger.info(f'connected relays: {[relay.url for relay in connected_relays]}')
@@ -1329,6 +1328,21 @@ class NostrTransport(SwapServerTransport):
     @property
     def relays(self):
         return self.network.config.NOSTR_RELAYS.split(',')
+
+    def get_relay_manager(self):
+        assert get_running_loop() == get_asyncio_loop(), f"this must be run on the asyncio thread!"
+        if not self.relay_manager:
+            if self.network.proxy and self.network.proxy.enabled:
+                proxy = make_aiohttp_proxy_connector(self.network.proxy, self.ssl_context)
+            else:
+                proxy: Optional['ProxyConnector'] = None
+            return aionostr.Manager(
+                self.relays,
+                private_key=self.nostr_private_key,
+                log=self.logger,
+                ssl_context=self.ssl_context,
+                proxy=proxy)
+        return self.relay_manager
 
     def get_offer(self, pubkey):
         offer = self._offers.get(pubkey)
@@ -1377,12 +1391,16 @@ class NostrTransport(SwapServerTransport):
         self.logger.info(f"published offer {event_id}")
 
     async def send_direct_message(self, pubkey: str, relays, content: str) -> str:
+        our_private_key = aionostr.key.PrivateKey(self.private_key)
+        recv_pubkey_hex = aionostr.util.from_nip19(pubkey)['object'].hex() if pubkey.startswith('npub') else pubkey
+        encrypted_msg = our_private_key.encrypt_message(content, recv_pubkey_hex)
         event_id = await aionostr._add_event(
             self.relay_manager,
-            kind=self.NOSTR_DM,
-            content=content,
+            kind=self.EPHEMERAL_REQUEST,
+            content=encrypted_msg,
             private_key=self.nostr_private_key,
-            direct_message=pubkey)
+            tags=[['p', recv_pubkey_hex]],
+        )
         return event_id
 
     @log_exceptions
@@ -1485,7 +1503,7 @@ class NostrTransport(SwapServerTransport):
     @log_exceptions
     async def check_direct_messages(self):
         privkey = aionostr.key.PrivateKey(self.private_key)
-        query = {"kinds": [self.NOSTR_DM], "limit":0, "#p": [self.nostr_pubkey]}
+        query = {"kinds": [self.EPHEMERAL_REQUEST], "limit":0, "#p": [self.nostr_pubkey]}
         async for event in self.relay_manager.get_events(query, single_event=False, only_stored=False):
             try:
                 content = privkey.decrypt_message(event.content, event.pubkey)

@@ -313,7 +313,7 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
         if get_coins is None:
             get_coins = self.window.get_coins
 
-        def make_tx(fee_policy, *, confirmed_only=False, base_tx=False):
+        def make_tx(fee_policy, *, confirmed_only=False, base_tx=None):
             coins = get_coins(nonlocal_only=nonlocal_only, confirmed_only=confirmed_only)
             return self.wallet.make_unsigned_transaction(
                 fee_policy=fee_policy,
@@ -719,7 +719,7 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
         if not self.question(msg):
             return
         self.save_pending_invoice()
-        coro = lnworker.pay_invoice(invoice.lightning_invoice, amount_msat=amount_msat)
+        coro = lnworker.pay_invoice(invoice, amount_msat=amount_msat)
         self.window.run_coroutine_from_thread(coro, _('Sending payment'))
 
     def broadcast_transaction(self, tx: Transaction, *, payment_identifier: PaymentIdentifier = None):

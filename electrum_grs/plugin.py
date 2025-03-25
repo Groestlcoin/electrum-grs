@@ -23,6 +23,7 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import json
 import os
 import pkgutil
 import importlib.util
@@ -31,6 +32,7 @@ import threading
 import traceback
 import sys
 import aiohttp
+import zipfile as zipfile_lib
 
 from typing import (NamedTuple, Any, Union, TYPE_CHECKING, Optional, Tuple,
                     Dict, Iterable, List, Sequence, Callable, TypeVar, Mapping)
@@ -38,12 +40,13 @@ import concurrent
 import zipimport
 from concurrent import futures
 from functools import wraps, partial
+from itertools import chain
 
 from .i18n import _
 from .util import (profiler, DaemonThread, UserCancelled, ThreadJob, UserFacingException)
 from . import bip32
 from . import plugins
-from .simple_config import SimpleConfig
+from .simple_config import ConfigVar, SimpleConfig
 from .logging import get_logger, Logger
 from .crypto import sha256
 
@@ -57,6 +60,8 @@ _logger = get_logger(__name__)
 plugin_loaders = {}
 hook_names = set()
 hooks = {}
+_root_permission_cache = {}
+_exec_module_failure = {}  # type: Dict[str, Exception]
 
 
 class Plugins(DaemonThread):
@@ -65,18 +70,24 @@ class Plugins(DaemonThread):
     pkgpath = os.path.dirname(plugins.__file__)
 
     @profiler
-    def __init__(self, config: SimpleConfig, gui_name):
-        DaemonThread.__init__(self)
-        self.name = 'Plugins'  # set name of thread
+    def __init__(self, config: SimpleConfig, gui_name = None, cmd_only: bool = False):
         self.config = config
-        self.hw_wallets = {}
-        self.plugins = {}  # type: Dict[str, BasePlugin]
+        self.cmd_only = cmd_only  # type: bool
         self.internal_plugin_metadata = {}
         self.external_plugin_metadata = {}
-        self.gui_name = gui_name
+        if cmd_only:
+            # only import the command modules of plugins
+            Logger.__init__(self)
+            self.find_plugins()
+            self.load_plugins()
+            return
+        DaemonThread.__init__(self)
         self.device_manager = DeviceMgr(config)
-        self.find_internal_plugins()
-        self.find_external_plugins()
+        self.name = 'Plugins'  # set name of thread
+        self.hw_wallets = {}
+        self.plugins = {}  # type: Dict[str, BasePlugin]
+        self.gui_name = gui_name
+        self.find_plugins()
         self.load_plugins()
         self.add_jobs(self.device_manager.thread_jobs())
         self.start()
@@ -85,43 +96,53 @@ class Plugins(DaemonThread):
     def descriptions(self):
         return dict(list(self.internal_plugin_metadata.items()) + list(self.external_plugin_metadata.items()))
 
-    def find_internal_plugins(self):
-        """Populates self.internal_plugin_metadata
-        """
-        iter_modules = list(pkgutil.iter_modules([self.pkgpath]))
+    def find_directory_plugins(self, pkg_path: str, external: bool):
+        """Finds plugins in directory form from the given pkg_path and populates the metadata dicts"""
+        iter_modules = list(pkgutil.iter_modules([pkg_path]))
         for loader, name, ispkg in iter_modules:
             # FIXME pyinstaller binaries are packaging each built-in plugin twice:
             #       once as data and once as code. To honor the "no duplicates" rule below,
             #       we exclude the ones packaged as *code*, here:
             if loader.__class__.__qualname__ == "PyiFrozenImporter":
                 continue
-            full_name = f'electrum_grs.plugins.{name}'
-            spec = importlib.util.find_spec(full_name)
-            if spec is None:  # pkgutil found it but importlib can't ?!
-                raise Exception(f"Error pre-loading {full_name}: no spec")
-            module = self.exec_module_from_spec(spec, full_name)
-            d = module.__dict__
+            module_path = os.path.join(pkg_path, name)
+            if external and not self._has_recursive_root_permissions(module_path):
+                self.logger.info(f"Not loading plugin {module_path}: directory has user write permissions")
+                continue
+            if self.cmd_only and not self.config.get('enable_plugin_' + name) is True:
+                continue
+            try:
+                with open(os.path.join(module_path, 'manifest.json'), 'r') as f:
+                    d = json.load(f)
+            except FileNotFoundError:
+                self.logger.info(f"could not find manifest.json of plugin {name}, skipping...")
+                continue
             if 'fullname' not in d:
                 continue
             d['display_name'] = d['fullname']
-            gui_good = self.gui_name in d.get('available_for', [])
-            if not gui_good:
-                continue
-            details = d.get('registers_wallet_type')
-            if details:
-                self.register_wallet_type(name, gui_good, details)
-            details = d.get('registers_keystore')
-            if details:
-                self.register_keystore(name, gui_good, details)
-            if d.get('requires_wallet_type'):
-                # trustedcoin will not be added to list
-                continue
-            if name in self.internal_plugin_metadata:
+            d['path'] = module_path
+            if not self.cmd_only:
+                gui_good = self.gui_name in d.get('available_for', [])
+                if not gui_good:
+                    continue
+                details = d.get('registers_wallet_type')
+                if details:
+                    self.register_wallet_type(name, gui_good, details)
+                details = d.get('registers_keystore')
+                if details:
+                    self.register_keystore(name, gui_good, details)
+            if name in self.internal_plugin_metadata or name in self.external_plugin_metadata:
                 _logger.info(f"Found the following plugin modules: {iter_modules=}")
                 raise Exception(f"duplicate plugins? for {name=}")
-            self.internal_plugin_metadata[name] = d
+            if not external:
+                self.internal_plugin_metadata[name] = d
+            else:
+                self.external_plugin_metadata[name] = d
 
-    def exec_module_from_spec(self, spec, path):
+    @staticmethod
+    def exec_module_from_spec(spec, path: str):
+        if prev_fail := _exec_module_failure.get(path):
+            raise Exception(f"exec_module already failed once before, with: {prev_fail!r}")
         try:
             module = importlib.util.module_from_spec(spec)
             # sys.modules needs to be modified for relative imports to work
@@ -129,68 +150,84 @@ class Plugins(DaemonThread):
             sys.modules[path] = module
             spec.loader.exec_module(module)
         except Exception as e:
+            # We can't undo all side-effects, but we at least rm the module from sys.modules,
+            # so the import system knows it failed. If called again for the same plugin, we do not
+            # retry due to potential interactions with not-undone side-effects (e.g. plugin
+            # might have defined commands).
+            _exec_module_failure[path] = e
+            if path in sys.modules:
+                sys.modules.pop(path, None)
             raise Exception(f"Error pre-loading {path}: {repr(e)}") from e
         return module
 
-    def load_plugins(self):
-        self.load_internal_plugins()
-        self.load_external_plugins()
+    def find_plugins(self):
+        internal_plugins_path = (self.pkgpath, False)
+        external_plugins_path = (self.get_external_plugin_dir(), True)
+        for pkg_path, external in (internal_plugins_path, external_plugins_path):
+            # external plugins enforce root permissions on the directory
+            if pkg_path and os.path.exists(pkg_path):
+                self.find_directory_plugins(pkg_path=pkg_path, external=external)
+                self.find_zip_plugins(pkg_path=pkg_path, external=external)
 
-    def load_internal_plugins(self):
-        for name, d in self.internal_plugin_metadata.items():
+    def load_plugins(self):
+        for name, d in chain(self.internal_plugin_metadata.items(), self.external_plugin_metadata.items()):
             if not d.get('requires_wallet_type') and self.config.get('enable_plugin_' + name):
                 try:
-                    self.load_internal_plugin(name)
+                    if self.cmd_only:  # only load init method to register commands
+                        self.maybe_load_plugin_init_method(name)
+                    else:
+                        self.load_plugin_by_name(name)
                 except BaseException as e:
                     self.logger.exception(f"cannot initialize plugin {name}: {e}")
-
-    def load_external_plugin(self, name):
-        if name in self.plugins:
-            return self.plugins[name]
-        # If we do not have the metadata, it was not detected by `load_external_plugins`
-        # on startup, or added by manual user installation after that point.
-        metadata = self.external_plugin_metadata.get(name)
-        if metadata is None:
-            self.logger.exception(f"attempted to load unknown external plugin {name}")
-            return
-        full_name = f'electrum_external_plugins.{name}.{self.gui_name}'
-        spec = importlib.util.find_spec(full_name)
-        if spec is None:
-            raise RuntimeError(f"{self.gui_name} implementation for {name} plugin not found")
-        module = self.exec_module_from_spec(spec, full_name)
-        plugin = module.Plugin(self, self.config, name)
-        self.add_jobs(plugin.thread_jobs())
-        self.plugins[name] = plugin
-        self.logger.info(f"loaded external plugin {name}")
-        return plugin
 
     def _has_root_permissions(self, path):
         return os.stat(path).st_uid == 0 and not os.access(path, os.W_OK)
 
+    @profiler(min_threshold=0.5)
+    def _has_recursive_root_permissions(self, path):
+        """Check if a directory and all its subdirectories have root permissions"""
+        global _root_permission_cache
+        if _root_permission_cache.get(path) is not None:
+            return _root_permission_cache[path]
+        _root_permission_cache[path] = False
+        for root, dirs, files in os.walk(path):
+            if not self._has_root_permissions(root):
+                return False
+            for f in files:
+                if not self._has_root_permissions(os.path.join(root, f)):
+                    return False
+        _root_permission_cache[path] = True
+        return True
+
     def get_external_plugin_dir(self):
         if sys.platform not in ['linux', 'darwin'] and not sys.platform.startswith('freebsd'):
             return
-        pkg_path = '/opt/electrum_plugins'
+        pkg_path = '/opt/electrum_grs_plugins'
         if not os.path.exists(pkg_path):
-            self.logger.info(f'direcctory {pkg_path} does not exist')
+            self.logger.info(f'directory {pkg_path} does not exist')
             return
         if not self._has_root_permissions(pkg_path):
             self.logger.info(f'not loading {pkg_path}: directory has user write permissions')
             return
         return pkg_path
 
-    def external_plugin_path(self, name):
-        metadata = self.external_plugin_metadata[name]
-        filename = metadata['filename']
-        return os.path.join(self.get_external_plugin_dir(), filename)
+    def zip_plugin_path(self, name):
+        filename = self.get_metadata(name)['filename']
+        if name in self.internal_plugin_metadata:
+            pkg_path = self.pkgpath
+        else:
+            pkg_path = self.get_external_plugin_dir()
+        return os.path.join(pkg_path, filename)
 
-    def find_external_plugins(self):
-        pkg_path = self.get_external_plugin_dir()
+    def find_zip_plugins(self, pkg_path: str, external: bool):
+        """Finds plugins in zip form in the given pkg_path and populates the metadata dicts"""
         if pkg_path is None:
             return
         for filename in os.listdir(pkg_path):
             path = os.path.join(pkg_path, filename)
-            if not self._has_root_permissions(path):
+            if not filename.endswith('.zip'):
+                continue
+            if external and not self._has_root_permissions(path):
                 self.logger.info(f'not loading {path}: file has user write permissions')
                 continue
             try:
@@ -205,28 +242,31 @@ class Plugins(DaemonThread):
                     raise Exception(f"duplicate plugins for name={name}")
                 if name in self.external_plugin_metadata:
                     raise Exception(f"duplicate plugins for name={name}")
-                module_path = f'electrum_external_plugins.{name}'
-                spec = zipfile.find_spec(name)
-                module = self.exec_module_from_spec(spec, module_path)
-                d = module.__dict__
-                gui_good = self.gui_name in d.get('available_for', [])
-                if not gui_good:
+                if self.cmd_only and not self.config.get('enable_plugin_' + name):
+                    continue
+                try:
+                    with zipfile_lib.ZipFile(path) as file:
+                        manifest_path = os.path.join(name, 'manifest.json')
+                        with file.open(manifest_path, 'r') as f:
+                            d = json.load(f)
+                except Exception:
+                    self.logger.info(f"could not load manifest.json from zip plugin {filename}", exc_info=True)
                     continue
                 d['filename'] = filename
-                if 'fullname' not in d:
-                    continue
-                d['display_name'] = d['fullname']
-                d['zip_hash_sha256'] = get_file_hash256(path)
-                self.external_plugin_metadata[name] = d
-
-    def load_external_plugins(self):
-        for name, d in self.external_plugin_metadata.items():
-            if self.config.get('enable_plugin_' + name):
-                try:
-                    self.load_external_plugin(name)
-                except BaseException as e:
-                    traceback.print_exc(file=sys.stdout)  # shouldn't this be... suppressed unless -v?
-                    self.logger.exception(f"cannot initialize plugin {name} {e!r}")
+                d['is_zip'] = True
+                d['path'] = path
+                if not self.cmd_only:
+                    gui_good = self.gui_name in d.get('available_for', [])
+                    if not gui_good:
+                        continue
+                    if 'fullname' not in d:
+                        continue
+                    d['display_name'] = d['fullname']
+                    d['zip_hash_sha256'] = get_file_hash256(path)
+                if external:
+                    self.external_plugin_metadata[name] = d
+                else:
+                    self.internal_plugin_metadata[name] = d
 
     def get(self, name):
         return self.plugins.get(name)
@@ -238,23 +278,51 @@ class Plugins(DaemonThread):
         """Imports the code of the given plugin.
         note: can be called from any thread.
         """
-        if name in self.internal_plugin_metadata:
-            return self.load_internal_plugin(name)
-        elif name in self.external_plugin_metadata:
-            return self.load_external_plugin(name)
+        if self.get_metadata(name):
+            return self.load_plugin_by_name(name)
         else:
             raise Exception(f"could not find plugin {name!r}")
 
-    def load_internal_plugin(self, name) -> 'BasePlugin':
+    def maybe_load_plugin_init_method(self, name: str) -> None:
+        """Loads the __init__.py module of the plugin if it is not already loaded."""
+        is_external = name in self.external_plugin_metadata
+        base_name = (f'electrum_grs_external_plugins.' if is_external else 'electrum_grs.plugins.') + name
+        if base_name not in sys.modules:
+            metadata = self.get_metadata(name)
+            is_zip = metadata.get('is_zip', False)
+            # if the plugin was not enabled on startup the init module hasn't been loaded yet
+            if not is_zip:
+                if is_external:
+                    path = os.path.join(metadata['path'], '__init__.py')
+                    init_spec = importlib.util.spec_from_file_location(base_name, path)
+                else:
+                    init_spec = importlib.util.find_spec(base_name)
+            else:
+                zipfile = zipimport.zipimporter(metadata['path'])
+                init_spec = zipfile.find_spec(name)
+            self.exec_module_from_spec(init_spec, base_name)
+            if name == "trustedcoin":
+                # removes trustedcoin after loading to not show it in the list of plugins
+                del self.internal_plugin_metadata[name]
+
+    def load_plugin_by_name(self, name: str) -> 'BasePlugin':
         if name in self.plugins:
             return self.plugins[name]
-        full_name = f'electrum_grs.plugins.{name}.{self.gui_name}'
+
+        # if the plugin was not enabled on startup the init module hasn't been loaded yet
+        self.maybe_load_plugin_init_method(name)
+
+        is_external = name in self.external_plugin_metadata
+        if not is_external:
+            full_name = f'electrum_grs.plugins.{name}.{self.gui_name}'
+        else:
+            full_name = f'electrum_grs_external_plugins.{name}.{self.gui_name}'
+
         spec = importlib.util.find_spec(full_name)
         if spec is None:
             raise RuntimeError(f"{self.gui_name} implementation for {name} plugin not found")
         try:
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            module = self.exec_module_from_spec(spec, full_name)
             plugin = module.Plugin(self, self.config, name)
         except Exception as e:
             raise Exception(f"Error loading {name} plugin: {repr(e)}") from e
@@ -348,11 +416,25 @@ class Plugins(DaemonThread):
             self.load_plugin(name)
         return self.plugins[name]
 
+    def is_plugin_zip(self, name: str) -> bool:
+        """Returns True if the plugin is a zip file"""
+        if (metadata := self.get_metadata(name)) is None:
+            return False
+        return metadata.get('is_zip', False)
+
+    def get_metadata(self, name: str) -> Optional[dict]:
+        """Returns the metadata of the plugin"""
+        metadata = self.internal_plugin_metadata.get(name) or self.external_plugin_metadata.get(name)
+        if not metadata:
+            return None
+        return metadata
+
     def run(self):
         while self.is_running():
             self.wake_up_event.wait(0.1)  # time.sleep(0.1) OR event
             self.run_jobs()
         self.on_stop()
+
 
 def get_file_hash256(path: str) -> str:
     '''Get the sha256 hash of a file in hex, similar to `sha256sum`.'''
@@ -440,14 +522,16 @@ class BasePlugin(Logger):
         raise NotImplementedError()
 
     def read_file(self, filename: str) -> bytes:
-        import zipfile
-        if self.name in self.parent.external_plugin_metadata:
-            plugin_filename = self.parent.external_plugin_path(self.name)
-            with zipfile.ZipFile(plugin_filename) as myzip:
+        if self.parent.is_plugin_zip(self.name):
+            plugin_filename = self.parent.zip_plugin_path(self.name)
+            with zipfile_lib.ZipFile(plugin_filename) as myzip:
                 with myzip.open(os.path.join(self.name, filename)) as myfile:
                     return myfile.read()
         else:
-            path = os.path.join(os.path.dirname(__file__), 'plugins', self.name, filename)
+            if self.name in self.parent.internal_plugin_metadata:
+                path = os.path.join(os.path.dirname(__file__), 'plugins', self.name, filename)
+            else:
+                path = os.path.join(self.parent.get_external_plugin_dir(), self.name, filename)
             with open(path, 'rb') as myfile:
                 return myfile.read()
 

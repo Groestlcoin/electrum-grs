@@ -465,6 +465,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
     def on_event_adb_set_future_tx(self, adb, txid):
         if adb == self.wallet.adb:
             self.history_model.refresh('set_future_tx')
+            self.utxo_list.refresh_all()  # for coin frozen status
+            self.update_status()  # frozen balance
 
     @qt_event_listener
     def on_event_verified(self, *args):
@@ -531,12 +533,16 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             send_exception_to_crash_reporter(e)
 
     def init_geometry(self):
+        # note: does not support multiple monitors well
         winpos = self.wallet.db.get("winpos-qt")
         try:
-            screen = self.app.desktop().screenGeometry()
-            assert screen.contains(QRect(*winpos))
-            self.setGeometry(*winpos)
-        except Exception:
+            winrect = QRect(*winpos)
+        except TypeError:
+            winrect = None
+        screen = self.app.primaryScreen().geometry()
+        if winrect and screen.contains(winrect):
+            self.setGeometry(winrect)
+        else:
             self.logger.info("using default geometry")
             self.setGeometry(100, 100, 840, 400)
 
@@ -1226,8 +1232,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                 self.show_error(str(e))
                 return False
 
-        if not self.config.SWAPSERVER_URL and not sm.is_initialized.is_set():
-            if not self.choose_swapserver_dialog(transport):
+        if not sm.is_initialized.is_set():
+            if not self.config.SWAPSERVER_URL:
+                if not self.choose_swapserver_dialog(transport):
+                    return False
+            else:
+                self.show_error(f'Could not contact swap server at {self.config.SWAPSERVER_URL:}')
                 return False
 
         assert sm.is_initialized.is_set()

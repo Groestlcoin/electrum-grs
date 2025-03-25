@@ -1069,6 +1069,10 @@ class LNWallet(LNWorker):
                 continue
             key = payment_hash.hex()
             info = self.get_payment_info(payment_hash)
+            # note: just after successfully paying an invoice using MPP, amount and fee values might be shifted
+            #       temporarily: the amount only considers 'settled' htlcs (see plist above), but we might also
+            #       have some inflight htlcs still. Until all relevant htlcs settle, the amount will be lower than
+            #       expected and the fee higher (the inflight htlcs will be effectively counted as fees).
             direction, amount_msat, fee_msat, timestamp = self.get_payment_value(info, plist)
             label = self.wallet.get_label_for_rhash(key)
             if not label and direction == PaymentDirection.FORWARDING:
@@ -1128,7 +1132,9 @@ class LNWallet(LNWorker):
         balance_msat = sum([x.amount_msat for x in out.values()])
         lb = sum(chan.balance(LOCAL) if not chan.is_closed_or_closing() else 0
                 for chan in self.channels.values())
-        assert balance_msat  == lb
+        if balance_msat != lb:
+            # this typically happens when a channel is recently force closed
+            self.logger.info(f'get_lightning_history: balance mismatch {balance_msat - lb}')
         return out
 
     def get_groups_for_onchain_history(self) -> Dict[str, str]:
@@ -1194,6 +1200,10 @@ class LNWallet(LNWorker):
                 return chan
 
     def handle_onchain_state(self, chan: Channel):
+        if self.network is None:
+            # network not started yet
+            return
+
         if type(chan) is ChannelBackup:
             util.trigger_callback('channel', self.wallet, chan)
             return
@@ -1490,14 +1500,14 @@ class LNWallet(LNWorker):
 
     @log_exceptions
     async def pay_invoice(
-            self, invoice: str, *,
+            self, invoice: Invoice, *,
             amount_msat: int = None,
             attempts: int = None,  # used only in unit tests
             full_path: LNPaymentPath = None,
             channels: Optional[Sequence[Channel]] = None,
     ) -> Tuple[bool, List[HtlcLog]]:
-
-        lnaddr = self._check_invoice(invoice, amount_msat=amount_msat)
+        bolt11 = invoice.lightning_invoice
+        lnaddr = self._check_bolt11_invoice(bolt11, amount_msat=amount_msat)
         min_final_cltv_delta = lnaddr.get_min_final_cltv_delta()
         payment_hash = lnaddr.paymenthash
         key = payment_hash.hex()
@@ -1849,11 +1859,11 @@ class LNWallet(LNWorker):
             except Exception:
                 return None
 
-    def _check_invoice(self, invoice: str, *, amount_msat: int = None) -> LnAddr:
+    def _check_bolt11_invoice(self, bolt11_invoice: str, *, amount_msat: int = None) -> LnAddr:
         """Parses and validates a bolt11 invoice str into a LnAddr.
         Includes pre-payment checks external to the parser.
         """
-        addr = lndecode(invoice)
+        addr = lndecode(bolt11_invoice)
         if addr.is_expired():
             raise InvoiceError(_("This invoice has expired"))
         # check amount
@@ -2885,8 +2895,8 @@ class LNWallet(LNWorker):
             fallback_address=None,
             channels=[chan2],
         )
-        return await self.pay_invoice(
-            invoice, channels=[chan1])
+        invoice_obj = Invoice.from_bech32(invoice)
+        return await self.pay_invoice(invoice_obj, channels=[chan1])
 
     def can_receive_invoice(self, invoice: BaseInvoice) -> bool:
         assert invoice.is_lightning()
