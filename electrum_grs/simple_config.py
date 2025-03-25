@@ -58,7 +58,7 @@ class ConfigVar(property):
         self._short_desc = short_desc
         self._long_desc = long_desc
         if plugin:  # enforce "key" starts with name of plugin
-            pkg_prefix = "electrum.plugins."  # for internal plugins
+            pkg_prefix = "electrum_grs.plugins."  # for internal plugins
             if plugin.startswith(pkg_prefix):
                 plugin = plugin[len(pkg_prefix):]
             assert "." not in plugin, plugin

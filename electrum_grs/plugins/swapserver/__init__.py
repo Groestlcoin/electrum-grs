@@ -1,15 +1,5 @@
-from electrum_grs.i18n import _
+from electrum_grs.simple_config import ConfigVar, SimpleConfig
 
-fullname = _('SwapServer')
-description = """
-Submarine swap server for an Electrum-GRS daemon.
-
-Example setup:
-
-  electrum-grs -o setconfig enable_plugin_swapserver True
-  electrum-grs -o setconfig swapserver_port 5455
-  electrum-grs daemon -v
-
-"""
-
-available_for = ['cmdline']
+SimpleConfig.SWAPSERVER_PORT = ConfigVar('swapserver_port', default=None, type_=int, plugin=__name__)
+SimpleConfig.SWAPSERVER_FEE_MILLIONTHS = ConfigVar('swapserver_fee_millionths', default=5000, type_=int, plugin=__name__)
+SimpleConfig.SWAPSERVER_ANN_POW_NONCE = ConfigVar('swapserver_ann_pow_nonce', default=0, type_=int, plugin=__name__)
