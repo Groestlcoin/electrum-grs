@@ -20,7 +20,7 @@ from electrum_grs.network import TxBroadcastError, BestEffortRequestFailed
 from electrum_grs.payment_identifier import (PaymentIdentifierType, PaymentIdentifier, invoice_from_payment_identifier,
                                          payment_identifier_from_invoice)
 from electrum_grs.submarine_swaps import SwapServerError
-from electrum_grs.fee_policy import FeePolicy
+from electrum_grs.fee_policy import FeePolicy, FixedFeePolicy
 
 from .amountedit import AmountEdit, BTCAmountEdit, SizedFreezableLineEdit
 from .paytoedit import InvalidPaymentIdentifier
@@ -264,7 +264,7 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
             except (NotEnoughFunds, NoDynamicFeeEstimates) as e:
                 # Check if we had enough funds excluding fees,
                 # if so, still provide opportunity to set lower fees.
-                tx = make_tx(FeePolicy('fixed:0'))
+                tx = make_tx(FixedFeePolicy(0))
         except NotEnoughFunds as e:
             self.max_button.setChecked(False)
             text = self.wallet.get_text_not_enough_funds_mentioning_frozen()

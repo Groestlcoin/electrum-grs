@@ -8,6 +8,7 @@ from electrum_grs.bitcoin import TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
 from electrum_grs.i18n import set_language, languages
 from electrum_grs.logging import get_logger
 from electrum_grs.util import base_unit_name_to_decimal_point
+from electrum_grs.gui import messages
 
 from .qetypes import QEAmount
 from .auth import AuthMixin, auth_protect
@@ -32,6 +33,10 @@ class QEConfig(AuthMixin, QObject):
     def longDescFor(self, key) -> str:
         cv = getattr(self.config.cv, key)
         return cv.get_long_desc() if cv else ''
+
+    @pyqtSlot(str, result=str)
+    def getTranslatedMessage(self, key) -> str:
+        return getattr(messages, key)
 
     languageChanged = pyqtSignal()
     @pyqtProperty(str, notify=languageChanged)
