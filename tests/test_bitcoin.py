@@ -25,7 +25,7 @@ from electrum_grs.bip32 import (BIP32Node, convert_bip32_intpath_to_strpath,
                             is_xpub, convert_bip32_strpath_to_intpath,
                             normalize_bip32_derivation, is_all_public_derivation)
 from electrum_grs.crypto import sha256d, SUPPORTED_PW_HASH_VERSIONS
-from electrum_grs import crypto, constants, bitcoin
+from electrum_grs import crypto, constants
 from electrum_grs.util import bfh, InvalidPassword, randrange
 from electrum_grs.storage import WalletStorage
 from electrum_grs.keystore import xtype_from_derivation

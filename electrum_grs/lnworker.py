@@ -2132,6 +2132,10 @@ class LNWallet(LNWorker):
             for end_node, edge_rest in zip(private_path_nodes, private_path_rest):
                 short_channel_id, fee_base_msat, fee_proportional_millionths, cltv_delta = edge_rest
                 short_channel_id = ShortChannelID(short_channel_id)
+                if (our_chan := self.get_channel_by_short_id(short_channel_id)) is not None:
+                    # check if the channel is one of our channels and frozen for sending
+                    if our_chan.is_frozen_for_sending():
+                        continue
                 # if we have a routing policy for this edge in the db, that takes precedence,
                 # as it is likely from a previous failure
                 channel_policy = self.channel_db.get_policy_for_node(
@@ -2613,7 +2617,7 @@ class LNWallet(LNWorker):
             channels = []
         else:
             if channels is None:
-                channels = list(self.get_channels_for_receiving(amount_msat))
+                channels = list(self.get_channels_for_receiving(amount_msat=amount_msat, include_disconnected=True))
                 random.shuffle(channels)  # let's not leak channel order
             scid_to_my_channels = {
                 chan.short_channel_id: chan for chan in channels
@@ -2709,14 +2713,19 @@ class LNWallet(LNWorker):
         can_send_sat -= self.fee_estimate(can_send_sat)
         return max(can_send_sat, 0)
 
-    def get_channels_for_receiving(self, amount_msat=None) -> Sequence[Channel]:
+    def get_channels_for_receiving(
+        self, *, amount_msat: Optional[int] = None, include_disconnected: bool = False,
+    ) -> Sequence[Channel]:
         if not amount_msat:  # assume we want to recv a large amt, e.g. finding max.
             amount_msat = float('inf')
         with self.lock:
             channels = list(self.channels.values())
-            # we exclude channels that cannot *right now* receive (e.g. peer offline)
             channels = [chan for chan in channels
-                        if (chan.is_open() and not chan.is_frozen_for_receiving())]
+                        if chan.is_open() and not chan.is_frozen_for_receiving()]
+
+            if not include_disconnected:
+                channels = [chan for chan in channels if chan.is_active()]
+
             # Filter out nodes that have low receive capacity compared to invoice amt.
             # Even with MPP, below a certain threshold, including these channels probably
             # hurts more than help, as they lead to many failed attempts for the sender.
@@ -3000,21 +3009,28 @@ class LNWallet(LNWorker):
                 else:
                     await self.taskgroup.spawn(self.reestablish_peer_for_given_channel(chan))
 
-    def current_target_feerate_per_kw(self) -> int:
+    def current_target_feerate_per_kw(self) -> Optional[int]:
         if self.network.fee_estimates.has_data():
             feerate_per_kvbyte = self.network.fee_estimates.eta_target_to_fee(FEE_LN_ETA_TARGET)
         else:
+            if constants.net is not constants.BitcoinRegtest:
+                return None
             feerate_per_kvbyte = FEERATE_FALLBACK_STATIC_FEE
         return max(FEERATE_PER_KW_MIN_RELAY_LIGHTNING, feerate_per_kvbyte // 4)
 
-    def current_low_feerate_per_kw(self) -> int:
+    def current_low_feerate_per_kw(self) -> Optional[int]:
         if constants.net is constants.BitcoinRegtest:
             feerate_per_kvbyte = 0
         else:
+            if not self.network.fee_estimates.has_data():
+                return None
             feerate_per_kvbyte = self.network.fee_estimates.eta_target_to_fee(FEE_LN_LOW_ETA_TARGET) or 0
         low_feerate_per_kw = max(FEERATE_PER_KW_MIN_RELAY_LIGHTNING, feerate_per_kvbyte // 4)
         # make sure this is never higher than the target feerate:
-        low_feerate_per_kw = min(low_feerate_per_kw, self.current_target_feerate_per_kw())
+        current_target_feerate = self.current_target_feerate_per_kw()
+        if not current_target_feerate:
+            return None
+        low_feerate_per_kw = min(low_feerate_per_kw, current_target_feerate)
         return low_feerate_per_kw
 
     def create_channel_backup(self, channel_id: bytes):

@@ -186,7 +186,6 @@ class Plugins(DaemonThread):
     @profiler(min_threshold=0.5)
     def _has_recursive_root_permissions(self, path):
         """Check if a directory and all its subdirectories have root permissions"""
-        global _root_permission_cache
         if _root_permission_cache.get(path) is not None:
             return _root_permission_cache[path]
         _root_permission_cache[path] = False
@@ -964,7 +963,7 @@ class DeviceMgr(ThreadJob):
     @runs_in_hwd_thread
     def _scan_devices_with_hid(self) -> List['Device']:
         try:
-            import hid
+            import hid  # noqa: F811
         except ImportError:
             return []
 
@@ -1038,7 +1037,7 @@ class DeviceMgr(ThreadJob):
                 ret["libusb.path"] = None
         # add hidapi
         try:
-            import hid
+            import hid  # noqa: F811
             ret["hidapi.version"] = hid.__version__  # available starting with 0.12.0.post2
         except Exception as e:
             from importlib.metadata import version

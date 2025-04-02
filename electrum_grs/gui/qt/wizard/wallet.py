@@ -34,7 +34,6 @@ from electrum_grs.gui.qt.util import (PasswordLineEdit, char_width_in_lineedit, 
 if TYPE_CHECKING:
     from electrum_grs.simple_config import SimpleConfig
     from electrum_grs.plugin import Plugins
-    from electrum_grs.daemon import Daemon
     from electrum_grs.gui.qt import QElectrumApplication
 
 WIF_HELP_TEXT = (_('WIF keys are typed in Electrum, based on script type.') + '\n\n' +

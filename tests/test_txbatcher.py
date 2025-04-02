@@ -4,7 +4,6 @@ from unittest import mock
 import asyncio
 
 from electrum_grs import storage, bitcoin, keystore, wallet
-from electrum_grs import Transaction
 from electrum_grs import SimpleConfig
 from electrum_grs import util
 from electrum_grs.address_synchronizer import TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_LOCAL
@@ -20,13 +19,14 @@ from .test_wallet_vertical import WalletIntegrityHelper
 class MockNetwork(Logger):
 
     def __init__(self, config):
+        Logger.__init__(self)
         self.config = config
         self.fee_estimates = FeeTimeEstimates()
         self.asyncio_loop = util.get_asyncio_loop()
         self.interface = None
         self.relay_fee = 1000
         self.wallets = []
-        self._tx_event = asyncio.Event()
+        self._tx_queue = asyncio.Queue()
 
     def get_local_height(self):
         return 42
@@ -41,14 +41,12 @@ class MockNetwork(Logger):
         for w in self.wallets:
             w.adb.receive_tx_callback(tx, TX_HEIGHT_UNCONFIRMED)
 
-        self._tx_event.set()
-        self._tx = tx
-        self._tx_event.clear()
+        self._tx_queue.put_nowait(tx)
         return tx.txid()
 
     async def next_tx(self):
-        await util.wait_for2(self._tx_event.wait(), timeout=10)
-        return self._tx
+        tx = await util.wait_for2(self._tx_queue.get(), timeout=10)
+        return tx
 
 
 WALLET_SEED = 'cause carbon luggage air humble mistake melt paper supreme sense gravity void'
@@ -81,6 +79,13 @@ class TestTxBatcher(ElectrumTestCase):
         ks = keystore.from_seed(seed_words, passphrase='', for_multisig=False)
         return WalletIntegrityHelper.create_standard_wallet(ks, gap_limit=gap_limit, config=config)
 
+    def _create_wallet(self):
+        wallet = self.create_standard_wallet_from_seed(WALLET_SEED)
+        wallet.start_network(self.network)
+        wallet.txbatcher.SLEEP_INTERVAL = 0.01
+        self.network.wallets.append(wallet)
+        return wallet
+
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_batch_payments(self, mock_save_db):
         # output 1:     tx1(o1) ---------------
@@ -92,14 +97,11 @@ class TestTxBatcher(ElectrumTestCase):
         # txbatcher creates a new transaction tx2, child of tx1
         #
         OUTGOING_ADDRESS = 'tb1q7rl9cxr85962ztnsze089zs8ycv52hk43f3m9n'
-        # create wallet
-        wallet = self.create_standard_wallet_from_seed(WALLET_SEED)
-        wallet.start_network(self.network)
-        wallet.txbatcher.SLEEP_INTERVAL = 0.01
-        self.network.wallets.append(wallet)
+        wallet = self._create_wallet()
         # fund wallet
         funding_tx = Transaction(FUNDING_TX)
         await self.network.try_broadcasting(funding_tx, 'funding')
+        await self.network.next_tx()
         assert wallet.adb.get_transaction(funding_tx.txid()) is not None
         self.logger.info(f'wallet balance {wallet.get_balance()}')
         # payment 1 -> tx1(output1)
@@ -137,15 +139,12 @@ class TestTxBatcher(ElectrumTestCase):
         The user tries to create tx2, that pays an invoice for 90k sats.
         The tx batcher fails  to batch, and should create a child transaction
         """
-        wallet = self.create_standard_wallet_from_seed(WALLET_SEED)
-        wallet.start_network(self.network)
-        wallet.txbatcher.SLEEP_INTERVAL = 0.01
-        wallet.txbatcher.RETRY_DELAY = 0.60
-        self.network.wallets.append(wallet)
+        wallet = self._create_wallet()
 
         # fund wallet
         funding_tx = Transaction(FUNDING_TX)
         await self.network.try_broadcasting(funding_tx, 'funding')
+        await self.network.next_tx()
         assert wallet.adb.get_transaction(funding_tx.txid()) is not None
         self.logger.info(f'wallet balance1 {wallet.get_balance()}')
 
@@ -168,10 +167,7 @@ class TestTxBatcher(ElectrumTestCase):
     async def test_sweep_from_submarine_swap(self, mock_save_db):
         self.maxDiff = None
         # create wallet
-        wallet = self.create_standard_wallet_from_seed(WALLET_SEED)
-        wallet.start_network(self.network)
-        wallet.txbatcher.SLEEP_INTERVAL = 0.01
-        self.network.wallets.append(wallet)
+        wallet = self._create_wallet()
         # add swap data
         swap_data = SwapData(
             is_reverse=True,

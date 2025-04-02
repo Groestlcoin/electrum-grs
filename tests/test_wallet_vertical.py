@@ -7,7 +7,6 @@ import asyncio
 import copy
 
 from electrum_grs import storage, bitcoin, keystore, bip32, slip39, wallet
-from electrum_grs import Transaction
 from electrum_grs import SimpleConfig
 from electrum_grs import util
 from electrum_grs.address_synchronizer import TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_LOCAL
