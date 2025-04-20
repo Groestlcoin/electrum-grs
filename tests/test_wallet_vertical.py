@@ -84,7 +84,7 @@ class WalletIntegrityHelper:
 
 def read_test_vector(filename: str):
     import os
-    from electrum.util import read_json_file
+    from electrum_grs.util import read_json_file
     path = os.path.join(os.path.dirname(__file__), filename)
     data = read_json_file(path)
     return data

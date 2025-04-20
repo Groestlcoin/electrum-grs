@@ -1,6 +1,6 @@
 from electrum_grs.plugin import hook
 from .jade import JadePlugin
-from electrum.hw_wallet import CmdLineHandler
+from electrum_grs.hw_wallet import CmdLineHandler
 
 class Plugin(JadePlugin):
     handler = CmdLineHandler()

@@ -9,8 +9,8 @@ from electrum_grs.plugin import Device, runs_in_hwd_thread
 from electrum_grs.transaction import Transaction, PartialTransaction, PartialTxInput, Sighash
 from electrum_grs.keystore import Hardware_KeyStore
 
-from electrum.hw_wallet import HW_PluginBase
-from electrum.hw_wallet.plugin import is_any_tx_output_on_change_branch, trezor_validate_op_return_output_and_get_data
+from electrum_grs.hw_wallet import HW_PluginBase
+from electrum_grs.hw_wallet.plugin import is_any_tx_output_on_change_branch, trezor_validate_op_return_output_and_get_data
 
 if TYPE_CHECKING:
     from .client import SafeTClient

@@ -30,7 +30,7 @@ from electrum_grs.gui.qt.password_dialog import PasswordLayout, PW_NEW, MSG_ENTE
 from electrum_grs.gui.qt.seed_dialog import SeedWidget, MSG_PASSPHRASE_WARN_ISSUE4566, KeysWidget
 from electrum_grs.gui.qt.util import (PasswordLineEdit, char_width_in_lineedit, WWLabel, InfoButton, font_height,
                                   ChoiceWidget, MessageBoxMixin, icon_path, IconLabel, read_QIcon)
-from electrum.gui.qt.plugins_dialog import PluginsDialog
+from electrum_grs.gui.qt.plugins_dialog import PluginsDialog
 
 if TYPE_CHECKING:
     from electrum_grs.simple_config import SimpleConfig
