@@ -57,13 +57,13 @@ class ConfigVar(property):
         assert long_desc is None or callable(long_desc)
         self._short_desc = short_desc
         self._long_desc = long_desc
-        if plugin:  # enforce "key" starts with name of plugin
+        if plugin:  # enforce "key" starts with 'plugins.<name of plugin>.'
             pkg_prefix = "electrum_grs.plugins."  # for internal plugins
             if plugin.startswith(pkg_prefix):
                 plugin = plugin[len(pkg_prefix):]
             assert "." not in plugin, plugin
-            key_prefix = plugin + "_"
-            assert key.startswith(key_prefix), f"ConfigVar {key=} must be prefixed with the plugin name ({key_prefix})"
+            key_prefix = f'plugins.{plugin}.'
+            assert key.startswith(key_prefix), f"ConfigVar {key=} must be prefixed with ({key_prefix})"
         property.__init__(self, self._get_config_value, self._set_config_value)
         assert key not in _config_var_from_key, f"duplicate config key str: {key!r}"
         _config_var_from_key[key] = self
@@ -299,9 +299,26 @@ class SimpleConfig(Logger):
         assert isinstance(key, str), key
         with self.lock:
             if value is not None:
-                self.user_config[key] = value
+                keypath = key.split('.')
+                d = self.user_config
+                for x in keypath[0:-1]:
+                    d2 = d.get(x)
+                    if d2 is None:
+                        d2 = d[x] = {}
+                    d = d2
+                d[keypath[-1]] = value
             else:
-                self.user_config.pop(key, None)
+                def delete_key(d, key):
+                    if '.' not in key:
+                        d.pop(key, None)
+                    else:
+                        prefix, suffix = key.split('.', 1)
+                        d2 = d.get(prefix)
+                        empty = delete_key(d2, suffix)
+                        if empty:
+                            d.pop(prefix)
+                    return len(d) == 0
+                delete_key(self.user_config, key)
             if save:
                 self.save_user_config()
 
@@ -315,7 +332,11 @@ class SimpleConfig(Logger):
         with self.lock:
             out = self.cmdline_options.get(key)
             if out is None:
-                out = self.user_config.get(key, default)
+                d = self.user_config
+                path = key.split('.')
+                for key in path[0:-1]:
+                    d = d.get(key, {})
+                out = d.get(path[-1], default)
         return out
 
     def is_set(self, key: Union[str, ConfigVar, ConfigVarWithConfig]) -> bool:
@@ -324,6 +345,15 @@ class SimpleConfig(Logger):
             key = key.key()
         assert isinstance(key, str), key
         return self.get(key, default=...) is not ...
+
+    def is_plugin_enabled(self, name: str) -> bool:
+        return bool(self.get(f'plugins.{name}.enabled'))
+
+    def enable_plugin(self, name: str):
+        self.set_key(f'plugins.{name}.enabled', True, save=True)
+
+    def disable_plugin(self, name: str):
+        self.set_key(f'plugins.{name}.enabled', False, save=True)
 
     def _check_dependent_keys(self) -> None:
         if self.NETWORK_SERVERFINGERPRINT:
@@ -657,13 +687,6 @@ If this is enabled, other nodes cannot open a channel to you. Channel recovery d
     )
     LIGHTNING_TO_SELF_DELAY_CSV = ConfigVar('lightning_to_self_delay', default=7 * 144, type_=int)
     LIGHTNING_MAX_FUNDING_SAT = ConfigVar('lightning_max_funding_sat', default=LN_MAX_FUNDING_SAT_LEGACY, type_=int)
-    LIGHTNING_LEGACY_ADD_TRAMPOLINE = ConfigVar(
-        'lightning_legacy_add_trampoline', default=False, type_=bool,
-        short_desc=lambda: _("Add extra trampoline to legacy payments"),
-        long_desc=lambda: _("""When paying a non-trampoline invoice, add an extra trampoline to the route, in order to improve your privacy.
-
-This will result in longer routes; it might increase your fees and decrease the success rate of your payments."""),
-    )
     INITIAL_TRAMPOLINE_FEE_LEVEL = ConfigVar('initial_trampoline_fee_level', default=1, type_=int)
     LIGHTNING_PAYMENT_FEE_MAX_MILLIONTHS = ConfigVar(
         'lightning_payment_fee_max_millionths', default=10_000,  # 1%
@@ -680,6 +703,7 @@ Warning: setting this to too low will result in lots of payment failures."""),
     )
 
     LIGHTNING_NODE_ALIAS = ConfigVar('lightning_node_alias', default='', type_=str)
+    LIGHTNING_NODE_COLOR_RGB = ConfigVar('lightning_node_color_rgb', default='000000', type_=str)
     EXPERIMENTAL_LN_FORWARD_PAYMENTS = ConfigVar('lightning_forward_payments', default=False, type_=bool)
     EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS = ConfigVar('lightning_forward_trampoline_payments', default=False, type_=bool)
     TEST_FAIL_HTLCS_WITH_TEMP_NODE_FAILURE = ConfigVar('test_fail_htlcs_with_temp_node_failure', default=False, type_=bool)
@@ -829,9 +853,9 @@ Warning: setting this to too low will result in lots of payment failures."""),
     # nostr
     NOSTR_RELAYS = ConfigVar(
         'nostr_relays',
-        default='wss://nos.lol,wss://relay.damus.io,wss://brb.io,wss://nostr.mom,'
+        default='wss://relay.getalby.com/v1,wss://nos.lol,wss://relay.damus.io,wss://brb.io,'
                 'wss://relay.primal.net,wss://ftp.halifax.rwth-aachen.de/nostr,'
-                'wss://eu.purplerelay.com,wss://nostr.einundzwanzig.space',
+                'wss://eu.purplerelay.com,wss://nostr.einundzwanzig.space,wss://nostr.mom',
         type_=str,
         short_desc=lambda: _("Nostr relays"),
         long_desc=lambda: ' '.join([
@@ -846,6 +870,13 @@ Warning: setting this to too low will result in lots of payment failures."""),
     ACCEPT_ZEROCONF_CHANNELS = ConfigVar('accept_zeroconf_channels', default=False, type_=bool)
     ZEROCONF_TRUSTED_NODE = ConfigVar('zeroconf_trusted_node', default='', type_=str)
     ZEROCONF_MIN_OPENING_FEE = ConfigVar('zeroconf_min_opening_fee', default=5000, type_=int)
+    LN_UTXO_RESERVE = ConfigVar(
+        'ln_utxo_reserve',
+        default=10000,
+        type_=int,
+        short_desc=lambda: _("Amount that must be kept on-chain in order to sweep anchor output channels"),
+        long_desc=lambda: _("Do not set this below dust limit"),
+    )
 
     # connect to remote WT
     WATCHTOWER_CLIENT_URL = ConfigVar('watchtower_url', default=None, type_=str)

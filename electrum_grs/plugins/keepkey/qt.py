@@ -15,9 +15,9 @@ from electrum_grs.i18n import _
 from electrum_grs.plugin import hook
 from electrum_grs.logging import Logger
 
-from electrum_grs.plugins.hw_wallet.qt import QtHandlerBase, QtPluginBase
-from electrum_grs.plugins.hw_wallet.trezor_qt_pinmatrix import PinMatrixWidget
-from electrum_grs.plugins.hw_wallet.plugin import only_hook_if_libraries_available
+from electrum_grs.hw_wallet.qt import QtHandlerBase, QtPluginBase
+from electrum_grs.hw_wallet.trezor_qt_pinmatrix import PinMatrixWidget
+from electrum_grs.hw_wallet.plugin import only_hook_if_libraries_available
 
 from .keepkey import KeepKeyPlugin, TIM_NEW, TIM_RECOVER, TIM_MNEMONIC, TIM_PRIVKEY
 

@@ -18,10 +18,14 @@ if TYPE_CHECKING:
 
 
 class QEConfig(AuthMixin, QObject):
+    instance = None  # type: Optional[QEConfig]
     _logger = get_logger(__name__)
 
     def __init__(self, config: 'SimpleConfig', parent=None):
         super().__init__(parent)
+        if QEConfig.instance:
+            raise RuntimeError('There should only be one QEConfig instance')
+        QEConfig.instance = self
         self.config = config
 
     @pyqtSlot(str, result=str)
@@ -119,6 +123,16 @@ class QEConfig(AuthMixin, QObject):
     def spendUnconfirmed(self, checked):
         self.config.WALLET_SPEND_CONFIRMED_ONLY = not checked
         self.spendUnconfirmedChanged.emit()
+
+    freezeReusedAddressUtxosChanged = pyqtSignal()
+    @pyqtProperty(bool, notify=freezeReusedAddressUtxosChanged)
+    def freezeReusedAddressUtxos(self):
+        return self.config.WALLET_FREEZE_REUSED_ADDRESS_UTXOS
+
+    @freezeReusedAddressUtxos.setter
+    def freezeReusedAddressUtxos(self, checked):
+        self.config.WALLET_FREEZE_REUSED_ADDRESS_UTXOS = checked
+        self.freezeReusedAddressUtxosChanged.emit()
 
     requestExpiryChanged = pyqtSignal()
     @pyqtProperty(int, notify=requestExpiryChanged)
@@ -290,6 +304,12 @@ class QEConfig(AuthMixin, QObject):
         if swapserver_npub != self.config.SWAPSERVER_NPUB:
             self.config.SWAPSERVER_NPUB = swapserver_npub
             self.swapServerNPubChanged.emit()
+
+    lnUtxoReserveChanged = pyqtSignal()
+    @pyqtProperty(QEAmount, notify=lnUtxoReserveChanged)
+    def lnUtxoReserve(self):
+        self._lnutxoreserve = QEAmount(amount_sat=self.config.LN_UTXO_RESERVE)
+        return self._lnutxoreserve
 
     @pyqtSlot('qint64', result=str)
     @pyqtSlot(QEAmount, result=str)

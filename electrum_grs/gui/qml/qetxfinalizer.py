@@ -152,6 +152,7 @@ class TxFeeSlider(FeeSlider):
         self._tx = None
         self._inputs = []
         self._outputs = []
+        self._finalized_txid = ''
         self._valid = False
         self._warning = ''
 
@@ -211,6 +212,17 @@ class TxFeeSlider(FeeSlider):
             self._outputs = outputs
             self.outputsChanged.emit()
 
+    finalizedTxidChanged = pyqtSignal()
+    @pyqtProperty(str, notify=finalizedTxidChanged)
+    def finalizedTxid(self):
+        return self._finalized_txid
+
+    @finalizedTxid.setter
+    def finalizedTxid(self, finalized_txid):
+        if self._finalized_txid != finalized_txid:
+            self._finalized_txid = finalized_txid
+            self.finalizedTxidChanged.emit()
+
     warningChanged = pyqtSignal()
     @pyqtProperty(str, notify=warningChanged)
     def warning(self):
@@ -238,6 +250,7 @@ class TxFeeSlider(FeeSlider):
 
         self.fee = QEAmount(amount_sat=int(fee))
         self.feeRate = f'{feerate:.1f}'
+        self.finalizedTxid = tx.txid()
 
         self.update_inputs_from_tx(tx)
         self.update_outputs_from_tx(tx)
@@ -275,7 +288,8 @@ class TxFeeSlider(FeeSlider):
                 'is_mine': self._wallet.wallet.is_mine(o.get_ui_address_str()),
                 'is_change': self._wallet.wallet.is_change(o.get_ui_address_str()),
                 'is_billing': self._wallet.wallet.is_billing_address(o.get_ui_address_str()),
-                'is_swap': False if not sm else sm.is_lockup_address_for_a_swap(o.get_ui_address_str()) or o.get_ui_address_str() == DummyAddress.SWAP
+                'is_swap': False if not sm else sm.is_lockup_address_for_a_swap(o.get_ui_address_str()) or o.get_ui_address_str() == DummyAddress.SWAP,
+                'is_reserve': o.is_utxo_reserve
             })
         self.outputs = outputs
 
@@ -285,7 +299,7 @@ class TxFeeSlider(FeeSlider):
             if invoice_amt == 0:
                 invoice_amt = tx.output_value()
         fee_warning_tuple = self._wallet.wallet.get_tx_fee_warning(
-            invoice_amt=invoice_amt, tx_size=tx.estimated_size(), fee=tx.get_fee())
+            invoice_amt=invoice_amt, tx_size=tx.estimated_size(), fee=tx.get_fee(), txid=tx.txid())
         if fee_warning_tuple:
             allow_send, long_warning, short_warning = fee_warning_tuple
             self.warning = _('Warning') + ': ' + long_warning
@@ -366,7 +380,7 @@ class QETxFinalizer(TxFeeSlider):
         self._logger.debug(f'make_tx amount={amount}')
 
         if self.f_make_tx:
-            tx = self.f_make_tx(amount)
+            tx = self.f_make_tx(amount, self._fee_policy)
         else:
             # default impl
             coins = self._wallet.wallet.get_spendable_coins(None)
@@ -388,9 +402,10 @@ class QETxFinalizer(TxFeeSlider):
 
         try:
             # make unsigned transaction
-            tx = self.make_tx(amount='!' if self._amount.isMax else self._amount.satsInt)
+            amount = '!' if self._amount.isMax else self._amount.satsInt
+            tx = self.make_tx(amount=amount)
         except NotEnoughFunds:
-            self.warning = _("Not enough funds")
+            self.warning = self._wallet.wallet.get_text_not_enough_funds_mentioning_frozen(for_amount=amount)
             self._valid = False
             self.validChanged.emit()
             return
@@ -416,6 +431,15 @@ class QETxFinalizer(TxFeeSlider):
             self.extraFee = QEAmount(amount_sat=x_fee_amount)
 
         self.update_fee_warning_from_tx(tx=tx, invoice_amt=amount)
+
+        if self._amount.isMax and not self.warning:
+            if reserve_sats := sum(txo.value for txo in tx.outputs() if txo.is_utxo_reserve):
+                reserve_str = self._config.format_amount_and_units(reserve_sats)
+                self.warning = ' '.join([
+                    _('Warning') + ':',
+                    _('Could not spend max: a security reserve of {} was kept for your Lightning channels.')
+                    .format(reserve_str)
+                ])
 
         self._valid = True
         self.validChanged.emit()

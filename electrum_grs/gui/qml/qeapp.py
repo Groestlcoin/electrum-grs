@@ -5,7 +5,8 @@ import os
 import sys
 import html
 import threading
-from typing import TYPE_CHECKING, Set
+from functools import partial
+from typing import TYPE_CHECKING, Set, List, Optional, Callable
 
 from PyQt6.QtCore import (pyqtSlot, pyqtSignal, pyqtProperty, QObject, QT_VERSION_STR, PYQT_VERSION_STR,
                           qInstallMessageHandler, QTimer, QSortFilterProxyModel)
@@ -52,7 +53,7 @@ if TYPE_CHECKING:
 
 if 'ANDROID_DATA' in os.environ:
     from jnius import autoclass, cast
-    from android import activity
+    from android import activity, permissions
 
     jpythonActivity = autoclass('org.kivy.android.PythonActivity').mActivity
     jHfc = autoclass('android.view.HapticFeedbackConstants')
@@ -73,20 +74,24 @@ class QEAppController(BaseCrashReporter, QObject):
     sendingBugreportFailure = pyqtSignal(str)
     secureWindowChanged = pyqtSignal()
     wantCloseChanged = pyqtSignal()
+    pluginLoaded = pyqtSignal(str)
+    startupFinished = pyqtSignal()
 
-    def __init__(self, qeapp: 'ElectrumQmlApplication', qedaemon: 'QEDaemon', plugins: 'Plugins'):
+    def __init__(self, qeapp: 'ElectrumQmlApplication', plugins: 'Plugins'):
         BaseCrashReporter.__init__(self, None, None, None)
         QObject.__init__(self)
 
         self._app = qeapp
-        self._qedaemon = qedaemon
         self._plugins = plugins
-        self.config = qedaemon.daemon.config
+        self.config = QEConfig.instance.config
 
         self._crash_user_text = ''
         self._app_started = False
         self._intent = ''
         self._secureWindow = False
+
+        # map of permissions and grant status _after_ asking user
+        self._permissions = {}  # type: dict[str, bool]
 
         # set up notification queue and notification_timer
         self.user_notification_queue = queue.Queue()
@@ -97,7 +102,7 @@ class QEAppController(BaseCrashReporter, QObject):
         self.notification_timer.setInterval(500)  # msec
         self.notification_timer.timeout.connect(self.on_notification_timer)
 
-        self._qedaemon.walletLoaded.connect(self.on_wallet_loaded)
+        QEDaemon.instance.walletLoaded.connect(self.on_wallet_loaded)
 
         self.userNotify.connect(self.doNotify)
 
@@ -107,12 +112,12 @@ class QEAppController(BaseCrashReporter, QObject):
         self._want_close = False
 
     def on_wallet_loaded(self):
-        qewallet = self._qedaemon.currentWallet
+        qewallet = QEDaemon.instance.currentWallet
         if not qewallet:
             return
 
         # register wallet in Exception_Hook
-        Exception_Hook.maybe_setup(config=qewallet.wallet.config, wallet=qewallet.wallet)
+        Exception_Hook.maybe_setup(wallet=qewallet.wallet)
 
         # attach to the wallet user notification events
         # connect only once
@@ -124,10 +129,11 @@ class QEAppController(BaseCrashReporter, QObject):
 
     def on_wallet_usernotify(self, wallet, message):
         self.logger.debug(message)
-        self.user_notification_queue.put((wallet,message))
+        self.user_notification_queue.put((wallet, message))
         if not self.notification_timer.isActive():
             self.logger.debug('starting app notification timer')
             self.notification_timer.start()
+            self.on_notification_timer()
 
     def on_notification_timer(self):
         if self.user_notification_queue.qsize() == 0:
@@ -140,6 +146,13 @@ class QEAppController(BaseCrashReporter, QObject):
             return
         self.user_notification_last_time = now
         self.logger.info("Notifying GUI about new user notifications")
+        # request permission and defer notify until after permission request callback
+        # note: permission request is only shown to user once, so it is safe to request
+        # multiple times
+        if self.isAndroid() and not self.hasPermission(permissions.Permission.POST_NOTIFICATIONS) \
+                and self._permissions.get(permissions.Permission.POST_NOTIFICATIONS) is None:
+            self.request_permission(permissions.Permission.POST_NOTIFICATIONS)
+            return
         try:
             wallet, message = self.user_notification_queue.get_nowait()
             self.userNotify.emit(str(wallet), message)
@@ -148,8 +161,6 @@ class QEAppController(BaseCrashReporter, QObject):
 
     def doNotify(self, wallet_name, message):
         self.logger.debug(f'sending push notification to OS: {message=!r}')
-        # FIXME: this does not work on Android 13+. We would need to declare (in manifest)
-        #        and also request-at-runtime android.permission.POST_NOTIFICATIONS.
         try:
             # TODO: lazy load not in UI thread please
             global notification
@@ -173,6 +184,42 @@ class QEAppController(BaseCrashReporter, QObject):
         except Exception as e:
             self.logger.error(f'unable to bind intent: {repr(e)}')
 
+    @pyqtSlot(str, result=bool)
+    def hasPermission(self, permissionFqcn: str) -> bool:
+        if not self.isAndroid():
+            return True
+        result = permissions.check_permission(permissionFqcn)
+        return result
+
+    def request_permission(self, permissionFqcn: str, permission_result_cb: Optional[Callable] = None):
+        if not self.isAndroid():
+            return True
+        self.logger.debug(f'requesting {permissionFqcn=}')
+        permissions.request_permission(
+            permissionFqcn,
+            callback=partial(self.on_request_permissions_result, permissionFqcn, permission_result_cb)
+        )
+
+    def on_request_permissions_result(
+            self,
+            permission: str,
+            permission_result_cb: Optional[Callable[[bool], None]],
+            permissions: List[str],
+            grant_results: List[bool]
+    ):
+        self.logger.debug(f'on_request_permissions_result, len={len(permissions)}, p={repr(permissions)}, g={repr(grant_results)}')
+        grant_result = None
+        try:
+            grant_result = grant_results[permissions.index(permission)]
+        except ValueError:
+            pass
+
+        if grant_result is not None:
+            self._permissions[permission] = grant_result
+
+        if permission_result_cb:
+            permission_result_cb(grant_result)
+
     def on_new_intent(self, intent):
         if not self._app_started:
             self._intent = intent
@@ -184,8 +231,11 @@ class QEAppController(BaseCrashReporter, QObject):
         if scheme == BITCOIN_BIP21_URI_SCHEME or scheme == LIGHTNING_URI_SCHEME:
             self.uriReceived.emit(data)
 
-    def startupFinished(self):
+    def startup_finished(self):
         self._app_started = True
+        self.startupFinished.emit()
+        for plugin_name in self._plugins.plugins.keys():
+            self.pluginLoaded.emit(plugin_name)
         if self._intent:
             self.on_new_intent(self._intent)
 
@@ -259,18 +309,16 @@ class QEAppController(BaseCrashReporter, QObject):
             self.logger.debug('None!')
             return None
 
-    @pyqtProperty('QVariant', notify=_dummy)
+    @pyqtProperty('QVariantList', notify=_dummy)
     def plugins(self):
         s = []
         for item in self._plugins.descriptions:
-            self.logger.info(item)
             s.append({
                 'name': item,
                 'fullname': self._plugins.descriptions[item]['fullname'],
                 'enabled': bool(self._plugins.get(item))
                 })
 
-        self.logger.debug(f'{str(s)}')
         return s
 
     @pyqtSlot(str, bool)
@@ -298,8 +346,8 @@ class QEAppController(BaseCrashReporter, QObject):
             'reportstring': self.get_report_string()
         }
 
-    @pyqtSlot(object, object, object, object)
-    def crash(self, config, e, text, tb):
+    @pyqtSlot(object, object, object)
+    def crash(self, e, text, tb):
         self.exc_args = (e, text, tb)  # for BaseCrashReporter
         self.showException.emit(self.crashData())
 
@@ -377,8 +425,6 @@ class ElectrumQmlApplication(QGuiApplication):
 
         self.logger = get_logger(__name__)
 
-        ElectrumQmlApplication._daemon = daemon
-
         # TODO QT6 order of declaration is important now?
         qmlRegisterType(QEAmount, 'org.electrum', 1, 0, 'Amount')
         qmlRegisterType(QENewWalletWizard, 'org.electrum', 1, 0, 'QNewWalletWizard')
@@ -433,17 +479,17 @@ class ElectrumQmlApplication(QGuiApplication):
 
         self.context = self.engine.rootContext()
         self.plugins = plugins
-        self._qeconfig = QEConfig(config)
-        self._qenetwork = QENetwork(daemon.network, self._qeconfig)
+        self.config = QEConfig(config)
+        self.network = QENetwork(daemon.network)
         self.daemon = QEDaemon(daemon, self.plugins)
-        self.appController = QEAppController(self, self.daemon, self.plugins)
-        self._maxAmount = QEAmount(is_max=True)
+        self.appController = QEAppController(self, self.plugins)
+        self.maxAmount = QEAmount(is_max=True)
         self.context.setContextProperty('AppController', self.appController)
-        self.context.setContextProperty('Config', self._qeconfig)
-        self.context.setContextProperty('Network', self._qenetwork)
+        self.context.setContextProperty('Config', self.config)
+        self.context.setContextProperty('Network', self.network)
         self.context.setContextProperty('Daemon', self.daemon)
         self.context.setContextProperty('FixedFont', self.fixedFont)
-        self.context.setContextProperty('MAX', self._maxAmount)
+        self.context.setContextProperty('MAX', self.maxAmount)
         self.context.setContextProperty('QRIP', self.qr_ip_h)
         self.context.setContextProperty('BUILD', {
             'electrum_version': version.ELECTRUM_VERSION,
@@ -468,10 +514,11 @@ class ElectrumQmlApplication(QGuiApplication):
     # slot is called after loading root QML. If object is None, it has failed.
     @pyqtSlot('QObject*', 'QUrl')
     def objectCreated(self, object, url):
+        self.engine.objectCreated.disconnect(self.objectCreated)
         if object is None:
             self._valid = False
-        self.engine.objectCreated.disconnect(self.objectCreated)
-        self.appController.startupFinished()
+        else:
+            self.appController.startup_finished()
 
     def message_handler(self, line, funct, file):
         # filter out common harmless messages
@@ -481,33 +528,33 @@ class ElectrumQmlApplication(QGuiApplication):
 
 
 class Exception_Hook(QObject, Logger):
-    _report_exception = pyqtSignal(object, object, object, object)
+    _report_exception = pyqtSignal(object, object, object)
 
     _INSTANCE = None  # type: Optional[Exception_Hook]  # singleton
 
-    def __init__(self, *, config: 'SimpleConfig', slot):
+    def __init__(self, *, slot):
         QObject.__init__(self)
         Logger.__init__(self)
         assert self._INSTANCE is None, "Exception_Hook is supposed to be a singleton"
-        self.config = config
         self.wallet_types_seen = set()  # type: Set[str]
 
         sys.excepthook = self.handler
         threading.excepthook = self.handler
 
-        self._report_exception.connect(slot)
+        if slot:
+            self._report_exception.connect(slot)
         EarlyExceptionsQueue.set_hook_as_ready()
 
     @classmethod
-    def maybe_setup(cls, *, config: 'SimpleConfig', wallet: 'Abstract_Wallet' = None, slot = None) -> None:
-        if not config.SHOW_CRASH_REPORTER:
+    def maybe_setup(cls, *, wallet: 'Abstract_Wallet' = None, slot=None) -> None:
+        if not QEConfig.instance.config.SHOW_CRASH_REPORTER:
             EarlyExceptionsQueue.set_hook_as_ready()  # flush already queued exceptions
             return
         if not cls._INSTANCE:
-            cls._INSTANCE = Exception_Hook(config=config, slot=slot)
+            cls._INSTANCE = Exception_Hook(slot=slot)
         if wallet:
             cls._INSTANCE.wallet_types_seen.add(wallet.wallet_type)
 
     def handler(self, *exc_info):
         self.logger.error('exception caught by crash reporter', exc_info=exc_info)
-        self._report_exception.emit(self.config, *exc_info)
+        self._report_exception.emit(*exc_info)

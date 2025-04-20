@@ -13,9 +13,9 @@ from electrum_grs.logging import Logger
 from electrum_grs.plugin import hook
 from electrum_grs.keystore import ScriptTypeNotSupported
 
-from electrum_grs.plugins.hw_wallet.qt import QtHandlerBase, QtPluginBase
-from electrum_grs.plugins.hw_wallet.trezor_qt_pinmatrix import PinMatrixWidget
-from electrum_grs.plugins.hw_wallet.plugin import only_hook_if_libraries_available, OutdatedHwFirmwareException
+from electrum_grs.hw_wallet.qt import QtHandlerBase, QtPluginBase
+from electrum_grs.hw_wallet.trezor_qt_pinmatrix import PinMatrixWidget
+from electrum_grs.hw_wallet.plugin import only_hook_if_libraries_available, OutdatedHwFirmwareException
 
 from electrum_grs.gui.qt.util import (WindowModalDialog, WWLabel, Buttons, CancelButton,
                                   OkButton, CloseButton, PasswordLineEdit, getOpenFileName, ChoiceWidget)

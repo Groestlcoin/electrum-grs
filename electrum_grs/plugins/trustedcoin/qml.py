@@ -5,8 +5,9 @@ from electrum_grs.plugin import hook
 from electrum_grs.util import UserFacingException
 
 from electrum_grs.gui.qml.qewallet import QEWallet
-from .common_qt import TrustedcoinPluginQObject
+from electrum_grs.gui.qml.qedaemon import QEDaemon
 
+from .common_qt import TrustedcoinPluginQObject
 from .trustedcoin import TrustedCoinPlugin, TrustedCoinException
 
 if TYPE_CHECKING:
@@ -44,7 +45,7 @@ class Plugin(TrustedCoinPlugin):
     def init_qml(self, app: 'ElectrumQmlApplication'):
         self.logger.debug(f'init_qml hook called, gui={str(type(app))}')
         self._app = app
-        wizard = self._app.daemon.newWalletWizard
+        wizard = QEDaemon.instance.newWalletWizard
         # important: TrustedcoinPluginQObject needs to be parented, as keeping a ref
         # in the plugin is not enough to avoid gc
         # Note: storing the trustedcoin qt helper in the plugin is different from the desktop client,

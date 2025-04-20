@@ -28,7 +28,7 @@ import concurrent.futures
 import copy
 import datetime
 import time
-from typing import TYPE_CHECKING, Optional, List, Union, Mapping
+from typing import TYPE_CHECKING, Optional, List, Union, Mapping, Callable
 from functools import partial
 from decimal import Decimal
 
@@ -57,7 +57,7 @@ from .util import (MessageBoxMixin, read_QIcon, Buttons, icon_path,
                    TRANSACTION_FILE_EXTENSION_FILTER_ONLY_COMPLETE_TX,
                    TRANSACTION_FILE_EXTENSION_FILTER_ONLY_PARTIAL_TX,
                    getSaveFileName, ColorSchemeItem,
-                   get_iconname_qrcode, VLine, WaitingDialog)
+                   get_icon_qrcode, VLine, WaitingDialog)
 from .rate_limiter import rate_limited
 from .my_treeview import create_toolbar_with_menu, QMenuWithConfig
 
@@ -410,6 +410,7 @@ def show_transaction(
     prompt_if_unsaved: bool = False,
     external_keypairs: Mapping[bytes, bytes] = None,
     payment_identifier: 'PaymentIdentifier' = None,
+    on_closed: Callable[[], None] = None,
 ):
     try:
         d = TxDialog(
@@ -418,6 +419,7 @@ def show_transaction(
             prompt_if_unsaved=prompt_if_unsaved,
             external_keypairs=external_keypairs,
             payment_identifier=payment_identifier,
+            on_closed=on_closed,
         )
     except SerializationError as e:
         _logger.exception('unable to deserialize the transaction')
@@ -438,6 +440,7 @@ class TxDialog(QDialog, MessageBoxMixin):
         prompt_if_unsaved: bool,
         external_keypairs: Mapping[bytes, bytes] = None,
         payment_identifier: 'PaymentIdentifier' = None,
+        on_closed: Callable[[], None] = None,
     ):
         '''Transactions in the wallet will show their description.
         Pass desc to give a description for txs not yet in the wallet.
@@ -451,6 +454,7 @@ class TxDialog(QDialog, MessageBoxMixin):
         self.wallet = parent.wallet
         self.payment_identifier = payment_identifier
         self.prompt_if_unsaved = prompt_if_unsaved
+        self.on_closed = on_closed
         self.saved = False
         self.desc = None
         if txid := tx.txid():
@@ -608,6 +612,9 @@ class TxDialog(QDialog, MessageBoxMixin):
             self._fetch_txin_data_fut.cancel()
             self._fetch_txin_data_fut = None
 
+        if self.on_closed:
+            self.on_closed()
+
     def reject(self):
         # Override escape-key to close normally (and invoke closeEvent)
         self.close()
@@ -628,7 +635,7 @@ class TxDialog(QDialog, MessageBoxMixin):
         action.triggered.connect(lambda: self.copy_to_clipboard(tx=gettx()))
         menu.addAction(action)
 
-        action = QAction(read_QIcon(get_iconname_qrcode()), _("Show as QR code"), self)
+        action = QAction(get_icon_qrcode(), _("Show as QR code"), self)
         action.triggered.connect(lambda: self.show_qr(tx=gettx()))
         menu.addAction(action)
 
@@ -905,7 +912,7 @@ class TxDialog(QDialog, MessageBoxMixin):
                 # 'amount' is zero for self-payments, so in that case we use sum-of-outputs
                 invoice_amt = abs(amount) if amount else self.tx.output_value()
                 fee_warning_tuple = self.wallet.get_tx_fee_warning(
-                    invoice_amt=invoice_amt, tx_size=size, fee=fee)
+                    invoice_amt=invoice_amt, tx_size=size, fee=fee, txid=self.tx.txid())
                 if fee_warning_tuple:
                     allow_send, long_warning, short_warning = fee_warning_tuple
                     fee_str += " - <font color={color}>{header}: {body}</font>".format(

@@ -17,8 +17,8 @@ from electrum_grs.wallet import Standard_Wallet, Multisig_Wallet, Abstract_Walle
 from electrum_grs.util import bfh, versiontuple, UserFacingException
 from electrum_grs.logging import get_logger
 
-from ..hw_wallet import HW_PluginBase, HardwareClientBase
-from ..hw_wallet.plugin import LibraryFoundButUnusable, only_hook_if_libraries_available
+from electrum.hw_wallet import HW_PluginBase, HardwareClientBase
+from electrum.hw_wallet.plugin import LibraryFoundButUnusable, only_hook_if_libraries_available
 
 if TYPE_CHECKING:
     from electrum_grs.plugin import DeviceInfo

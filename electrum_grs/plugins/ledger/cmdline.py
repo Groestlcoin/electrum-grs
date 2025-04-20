@@ -1,6 +1,7 @@
 from electrum_grs.plugin import hook
+from electrum_grs.hw_wallet import CmdLineHandler
+
 from .ledger import LedgerPlugin
-from ..hw_wallet import CmdLineHandler
 
 class Plugin(LedgerPlugin):
     handler = CmdLineHandler()

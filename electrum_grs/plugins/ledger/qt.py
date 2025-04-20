@@ -9,8 +9,8 @@ from electrum_grs.plugin import hook
 from electrum_grs.wallet import Standard_Wallet
 
 from .ledger import LedgerPlugin, Ledger_Client
-from ..hw_wallet.qt import QtHandlerBase, QtPluginBase
-from ..hw_wallet.plugin import only_hook_if_libraries_available
+from electrum_grs.hw_wallet.qt import QtHandlerBase, QtPluginBase
+from electrum_grs.hw_wallet.plugin import only_hook_if_libraries_available
 from electrum_grs.gui.qt.wizard.wallet import WCScriptAndDerivation, WCHWUninitialized, WCHWUnlock, WCHWXPub
 
 if TYPE_CHECKING:
@@ -57,4 +57,3 @@ class Ledger_Handler(QtHandlerBase):
 
     def __init__(self, win):
         super(Ledger_Handler, self).__init__(win, 'Ledger')
-

@@ -62,7 +62,7 @@ from .lnutil import (
     LnKeyFamily, LOCAL, REMOTE, MIN_FINAL_CLTV_DELTA_FOR_INVOICE, SENT, RECEIVED, HTLCOwner, UpdateAddHtlc, LnFeatures,
     ShortChannelID, HtlcLog, NoPathFound, InvalidGossipMsg, FeeBudgetExceeded, ImportedChannelBackupStorage,
     OnchainChannelBackupStorage, ln_compare_features, IncompatibleLightningFeatures, PaymentFeeBudget,
-    NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE, GossipForwardingMessage
+    NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE, GossipForwardingMessage, MIN_FUNDING_SAT
 )
 from .lnonion import decode_onion_error, OnionFailureCode, OnionRoutingFailure, OnionPacket
 from .lnmsg import decode_msg
@@ -912,6 +912,11 @@ class LNWallet(LNWorker):
         return (self.can_have_recoverable_channels()
                 and self.config.LIGHTNING_USE_RECOVERABLE_CHANNELS)
 
+    def has_anchor_channels(self) -> bool:
+        """Returns True if any active channel is an anchor channel."""
+        return any(chan.has_anchors() and not chan.is_redeemed()
+                    for chan in self.channels.values())
+
     @property
     def channels(self) -> Mapping[bytes, Channel]:
         """Returns a read-only copy of channels."""
@@ -1088,6 +1093,7 @@ class LNWallet(LNWorker):
                 group_id = group_id,
                 timestamp = timestamp or 0,
                 label=label,
+                direction=direction,
             )
             out[payment_hash.hex()] = item
         for chan in itertools.chain(self.channels.values(), self.channel_backups.values()):  # type: AbstractChannel
@@ -1107,6 +1113,7 @@ class LNWallet(LNWorker):
                 fee_msat = None,
                 payment_hash = None,
                 preimage = None,
+                direction=None,
             )
             out[funding_txid] = item
             item = chan.get_closing_height()
@@ -1125,6 +1132,7 @@ class LNWallet(LNWorker):
                 fee_msat = None,
                 payment_hash = None,
                 preimage = None,
+                direction=None,
             )
             out[closing_txid] = item
 
@@ -1418,20 +1426,23 @@ class LNWallet(LNWorker):
         tx = self.wallet.make_unsigned_transaction(
             coins=coins,
             outputs=outputs,
-            fee_policy=fee_policy)
+            fee_policy=fee_policy,
+            # we do not know yet if peer accepts anchors, just assume they do
+            is_anchor_channel_opening=self.config.ENABLE_ANCHOR_CHANNELS,
+        )
         tx.set_rbf(False)
         # rm randomness from locktime, as we use the locktime as entropy for deriving the funding_privkey
         # (and it would be confusing to get a collision as a consequence of the randomness)
         tx.locktime = get_locktime_for_new_transaction(self.network, include_random_component=False)
         return tx
 
-    def suggest_funding_amount(self, amount_to_pay, coins):
+    def suggest_funding_amount(self, amount_to_pay, coins) -> Tuple[int, int] | None:
         """ whether we can pay amount_sat after opening a new channel"""
         num_sats_can_send = int(self.num_sats_can_send())
         lightning_needed = amount_to_pay - num_sats_can_send
         assert lightning_needed > 0
-        min_funding_sat = lightning_needed + (lightning_needed // 20) + 1000 # safety margin
-        min_funding_sat = max(min_funding_sat, 100_000) # at least 1mBTC
+        min_funding_sat = lightning_needed + (lightning_needed // 20) + 1000  # safety margin
+        min_funding_sat = max(min_funding_sat, MIN_FUNDING_SAT)  # at least MIN_FUNDING_SAT
         if min_funding_sat > self.config.LIGHTNING_MAX_FUNDING_SAT:
             return
         fee_policy = FeePolicy(f'feerate:{FEERATE_FALLBACK_STATIC_FEE}')
@@ -1597,7 +1608,12 @@ class LNWallet(LNWorker):
             amount_to_pay=amount_to_pay,
             invoice_pubkey=node_pubkey,
             uses_trampoline=self.uses_trampoline(),
-            use_two_trampolines=self.config.LIGHTNING_LEGACY_ADD_TRAMPOLINE,
+            # the config option to use two trampoline hops for legacy payments has been removed as
+            # the trampoline onion is too small (400 bytes) to accommodate two trampoline hops and
+            # routing hints, making the functionality unusable for payments that require routing hints.
+            # TODO: if you read this, the year is 2027 and there is no use for the second trampoline
+            # hop code anymore remove the code completely.
+            use_two_trampolines=False,
         )
         self.logs[payment_hash.hex()] = log = []  # TODO incl payment_secret in key (re trampoline forwarding)
 
@@ -2593,8 +2609,9 @@ class LNWallet(LNWorker):
             else:
                 self.logger.info(f"received unknown htlc_failed, probably from previous session (phash={payment_hash.hex()})")
                 key = payment_hash.hex()
-                self.set_invoice_status(key, PR_UNPAID)
-                util.trigger_callback('payment_failed', self.wallet, key, '')
+                if self.get_payment_status(payment_hash) != PR_UNPAID:
+                    self.set_invoice_status(key, PR_UNPAID)
+                    util.trigger_callback('payment_failed', self.wallet, key, '')
 
         if fw_key:
             fw_htlcs = self.active_forwardings[fw_key]

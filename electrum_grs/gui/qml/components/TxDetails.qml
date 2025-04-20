@@ -18,9 +18,14 @@ Pane {
     property alias label: txdetails.label
 
     signal detailsChanged
+    signal closed
 
     function close() {
         app.stack.pop()
+    }
+
+    StackView.onRemoved: {
+        closed()
     }
 
     ColumnLayout {
@@ -366,7 +371,7 @@ Pane {
                 Layout.preferredWidth: 1
                 id: feebumpButton
                 icon.source: '../../icons/add.png'
-                text: qsTr('Bump fee')
+                text: qsTr('Bump fee...')
                 visible: txdetails.canBump || txdetails.canCpfp
                 onClicked: {
                     if (txdetails.canBump) {
@@ -382,7 +387,7 @@ Pane {
                 Layout.preferredWidth: 1
                 id: cancelButton
                 icon.source: '../../icons/closebutton.png'
-                text: qsTr('Cancel Tx')
+                text: qsTr('Cancel Tx...')
                 visible: txdetails.canCancel
                 onClicked: {
                     var dialog = rbfCancelDialog.createObject(root, { txid: txdetails.txid })
@@ -393,7 +398,9 @@ Pane {
                 Layout.fillWidth: true
                 Layout.preferredWidth: 1
                 icon.source: '../../icons/key.png'
-                text: qsTr('Sign')
+                text: txdetails.shouldConfirm
+                    ? qsTr('Sign...')
+                    : qsTr('Sign')
                 visible: txdetails.canSign
                 onClicked: {
                     if (txdetails.shouldConfirm) {
@@ -414,7 +421,7 @@ Pane {
             FlatButton {
                 Layout.fillWidth: true
                 Layout.preferredWidth: 1
-                icon.source: '../../icons/microphone.png'
+                icon.source: '../../icons/tab_send.png'
                 text: qsTr('Broadcast')
                 visible: txdetails.canBroadcast
                 enabled: !txdetails.lockDelay
@@ -425,7 +432,7 @@ Pane {
                 Layout.fillWidth: true
                 Layout.preferredWidth: 1
                 icon.source: '../../icons/qrcode_white.png'
-                text: qsTr('Share')
+                text: qsTr('Share...')
                 enabled: !txdetails.isUnrelated && !txdetails.isRemoved
                 onClicked: {
                     var msg = ''
@@ -465,7 +472,7 @@ Pane {
                 Layout.fillWidth: true
                 Layout.preferredWidth: 1
                 icon.source: '../../icons/delete.png'
-                text: qsTr('Remove')
+                text: qsTr('Remove...')
                 visible: txdetails.canRemove
                 onClicked: txdetails.removeLocalTx()
             }

@@ -10,11 +10,11 @@ from electrum_grs.plugin import hook
 from electrum_grs.util import UserCancelled, UserFacingException
 
 from .bitbox02 import BitBox02Plugin
-from ..hw_wallet.qt import QtHandlerBase, QtPluginBase
-from ..hw_wallet.plugin import only_hook_if_libraries_available, OperationCancelled
+from electrum_grs.hw_wallet.qt import QtHandlerBase, QtPluginBase
+from electrum_grs.hw_wallet.plugin import only_hook_if_libraries_available, OperationCancelled
 
 from electrum_grs.gui.qt.wizard.wallet import WCScriptAndDerivation, WCHWUnlock, WCHWUninitialized, WCHWXPub
-from electrum_grs.gui.qt.util import WindowModalDialog, OkButton, ButtonsTextEdit
+from electrum_grs.gui.qt.util import WindowModalDialog, OkButton, ButtonsTextEdit, read_QIcon
 
 if TYPE_CHECKING:
     from electrum_grs.gui.qt.wizard.wallet import QENewWalletWizard
@@ -58,7 +58,7 @@ class Plugin(BitBox02Plugin, QtPluginBase):
             )
 
         device_name = "{} ({})".format(self.device, keystore.label)
-        mpk_text.addButton("eye1.png", on_button_click, _("Show on {}").format(device_name))
+        mpk_text.addButton(read_QIcon("eye1.png"), on_button_click, _("Show on {}").format(device_name))
 
     @hook
     def init_wallet_wizard(self, wizard: 'QENewWalletWizard'):

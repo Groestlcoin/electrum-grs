@@ -14,8 +14,8 @@ from electrum_grs.logging import get_logger
 from electrum_grs.plugin import runs_in_hwd_thread, Device
 from electrum_grs.network import Network
 
-from electrum_grs.plugins.hw_wallet import HW_PluginBase, HardwareClientBase
-from electrum_grs.plugins.hw_wallet.plugin import OutdatedHwFirmwareException
+from electrum_grs.hw_wallet import HW_PluginBase, HardwareClientBase
+from electrum_grs.hw_wallet.plugin import OutdatedHwFirmwareException
 
 if TYPE_CHECKING:
     from electrum_grs.plugin import DeviceInfo
@@ -33,6 +33,7 @@ _logger = get_logger(__name__)
 
 try:
     # Do imports
+    from .jadepy import jade
     from .jadepy.jade import JadeAPI
     from .jadepy.jade_serial import JadeSerialImpl
     from serial.tools import list_ports

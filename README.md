@@ -106,8 +106,8 @@ $ python3 -m pip install --user -e .
 
 Create translations (optional):
 ```
-$ sudo apt-get install python3-requests gettext qttools5-dev-tools
-$ ./contrib/pull_locale
+$ sudo apt-get install gettext
+$ ./contrib/locale/build_locale.sh electrum/locale/locale electrum/locale/locale
 ```
 
 Finally, to start Electrum-GRS:

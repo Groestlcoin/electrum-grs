@@ -1,8 +1,9 @@
 from electrum_grs.plugin import hook
 from electrum_grs.i18n import _
 from electrum_grs.util import print_stderr
+from electrum_grs.hw_wallet import CmdLineHandler
+
 from .trezor import TrezorPlugin, PASSPHRASE_ON_DEVICE
-from ..hw_wallet import CmdLineHandler
 
 class TrezorCmdLineHandler(CmdLineHandler):
     def __init__(self):

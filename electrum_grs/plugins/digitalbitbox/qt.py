@@ -9,8 +9,8 @@ from electrum_grs.plugin import hook
 from electrum_grs.wallet import Standard_Wallet, Abstract_Wallet
 from electrum_grs.util import UserCancelled, UserFacingException
 
-from electrum_grs.plugins.hw_wallet.qt import QtHandlerBase, QtPluginBase
-from electrum_grs.plugins.hw_wallet.plugin import only_hook_if_libraries_available, OperationCancelled
+from electrum_grs.hw_wallet.qt import QtHandlerBase, QtPluginBase
+from electrum_grs.hw_wallet.plugin import only_hook_if_libraries_available, OperationCancelled
 
 from electrum_grs.gui.qt.wizard.wallet import WCScriptAndDerivation, WCHWXPub, WCHWUnlock
 

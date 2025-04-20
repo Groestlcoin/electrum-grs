@@ -103,7 +103,7 @@ Item {
         dialog.open()
     }
 
-    function payOnchain(invoice) {
+    function payOnchain(invoicedialog, invoice) {
         var dialog = confirmPaymentDialog.createObject(mainView, {
                 address: invoice.address,
                 satoshis: invoice.amountOverride.isEmpty
@@ -120,6 +120,8 @@ Item {
                     dialog.finalizer.sign()
                 }
             } else {
+                // store txid in invoicedialog so the dialog can detect broadcast success
+                invoicedialog.broadcastTxid = dialog.finalizer.finalizedTxid
                 dialog.finalizer.signAndSend()
             }
         })
@@ -139,7 +141,9 @@ Item {
                 message: qsTr('Sweep transaction'),
                 showOptions: false,
                 amountLabelText: qsTr('Total sweep amount'),
-                sendButtonText: qsTr('Sweep')
+                sendButtonText: Daemon.currentWallet.isWatchOnly
+                    ? qsTr('Sweep...')
+                    : qsTr('Sweep')
             })
             finalizerDialog.accepted.connect(function() {
                 if (Daemon.currentWallet.isWatchOnly) {
@@ -223,7 +227,7 @@ Item {
             icon.color: action.enabled ? 'transparent' : Material.iconDisabledColor
             icon.source: '../../icons/sweep.png'
             action: Action {
-                text: qsTr('Sweep key')
+                text: qsTr('Sweep key(s)')
                 onTriggered: {
                     startSweep()
                     menu.deselect()
@@ -447,6 +451,7 @@ Item {
     Connections {
         target: Daemon
         function onWalletLoaded() {
+            infobanner.hide() // start hidden when switching wallets
             if (_intentUri) {
                 invoiceParser.recipient = _intentUri
                 _intentUri = ''
@@ -497,6 +502,27 @@ Item {
             })
             dialog.open()
         }
+        function onBalanceChanged() {
+            // ln low reserve warning
+            if (Daemon.currentWallet.isLowReserve) {
+                var message = [
+                    qsTr('You do not have enough on-chain funds to protect your Lightning channels.'),
+                    qsTr('You should have at least %1 on-chain in order to be able to sweep channel outputs.').arg(Config.formatSats(Config.lnUtxoReserve) + ' ' + Config.baseUnit)
+                ].join(' ')
+                infobanner.show(message, function() {
+                    var dialog = app.messageDialog.createObject(app, {
+                        text: message + '\n\n' + qsTr('Do you want to perform a swap?'),
+                        yesno: true
+                    })
+                    dialog.accepted.connect(function() {
+                        app.startSwap()
+                    })
+                    dialog.open()
+                })
+            } else {
+                infobanner.hide()
+            }
+        }
     }
 
     Component {
@@ -519,7 +545,7 @@ Item {
                     }
                 }
                 if (invoice.invoiceType == Invoice.OnchainInvoice) {
-                    payOnchain(invoice)
+                    payOnchain(_invoiceDialog, invoice)
                 } else if (invoice.invoiceType == Invoice.LightningInvoice) {
                     if (lninvoiceButPayOnchain) {
                         var dialog = app.messageDialog.createObject(mainView, {
@@ -527,7 +553,7 @@ Item {
                             yesno: true
                         })
                         dialog.accepted.connect(function() {
-                            payOnchain(invoice)
+                            payOnchain(_invoiceDialog, invoice)
                         })
                         dialog.open()
                     } else {
@@ -653,6 +679,7 @@ Item {
                     dialog.open()
                 }
             }
+
             // TODO: lingering confirmPaymentDialogs can raise exceptions in
             // the child finalizer when currentWallet disappears, but we need
             // it long enough for the finalizer to finish..

@@ -490,8 +490,10 @@ class TxEditor(WindowModalDialog):
             elif self.can_pay_assuming_zero_fees(confirmed_only=confirmed_only):
                 self.error += ' ' + _('You need to set a lower fee.')
             elif frozen_bal := self.wallet.get_frozen_balance_str():
-                # FIXME only show if unfreezing would fix "not enough funds"
-                self.error += ' ' + _("Some coins are frozen: {} (can be unfrozen in the Addresses or in the Coins tab)").format(frozen_bal)
+                self.error = self.wallet.get_text_not_enough_funds_mentioning_frozen(
+                    for_amount=self.output_value,
+                    hint=_('Can be unfrozen in the Addresses or in the Coins tab')
+                )
         if not self.tx:
             if self.not_enough_funds:
                 self.io_widget.update(None)
@@ -517,7 +519,7 @@ class TxEditor(WindowModalDialog):
         amount = self.tx.output_value() if self.output_value == '!' else self.output_value
         tx_size = self.tx.estimated_size()
         fee_warning_tuple = self.wallet.get_tx_fee_warning(
-            invoice_amt=amount, tx_size=tx_size, fee=fee)
+            invoice_amt=amount, tx_size=tx_size, fee=fee, txid=self.tx.txid())
         if fee_warning_tuple:
             allow_send, long_warning, short_warning = fee_warning_tuple
             if not allow_send:
@@ -531,6 +533,10 @@ class TxEditor(WindowModalDialog):
         # warn if spending unconf
         if any((txin.block_height is not None and txin.block_height<=0) for txin in self.tx.inputs()):
             messages.append(_('This transaction will spend unconfirmed coins.'))
+        # warn if a reserve utxo was added
+        if reserve_sats := sum(txo.value for txo in self.tx.outputs() if txo.is_utxo_reserve):
+            reserve_str = self.main_window.config.format_amount_and_units(reserve_sats)
+            messages.append(_('Could not spend max: a security reserve of {} was kept for your Lightning channels.').format(reserve_str))
         # warn if we merge from mempool
         if self.is_batching():
             messages.append(_('This payment will be merged with another existing transaction.'))

@@ -53,6 +53,7 @@ from abc import abstractmethod, ABC
 import socket
 import enum
 from contextlib import nullcontext
+import traceback
 
 import attr
 import aiohttp
@@ -1652,7 +1653,7 @@ def _set_custom_task_factory(loop: asyncio.AbstractEventLoop):
     - "asyncio.create_task"
     - "loop.create_task"
     - "asyncio.ensure_future"
-    - what about "asyncio.run_coroutine_threadsafe"? not sure if that is safe.
+    - "asyncio.run_coroutine_threadsafe"
 
     related:
         - https://bugs.python.org/issue44665
@@ -1675,6 +1676,41 @@ def _set_custom_task_factory(loop: asyncio.AbstractEventLoop):
         return task
 
     loop.set_task_factory(factory)
+
+
+def run_sync_function_on_asyncio_thread(func: Callable, *, block: bool) -> None:
+    """Run a non-async fn on the asyncio thread. Can be called from any thread.
+
+    If the current thread is already the asyncio thread, func is guaranteed
+    to have been completed when this method returns.
+
+    For any other thread, we only wait for completion if `block` is True.
+    """
+    assert not asyncio.iscoroutinefunction(func), "func must be a non-async function"
+    asyncio_loop = get_asyncio_loop()
+    if get_running_loop() == asyncio_loop:  # we are running on the asyncio thread
+        func()
+    else:  # non-asyncio thread
+        async def wrapper():
+            return func()
+        fut = asyncio.run_coroutine_threadsafe(wrapper(), loop=asyncio_loop)
+        if block:
+            fut.result()
+        else:
+            # add explicit logging of exceptions, otherwise they might get lost
+            tb1 = traceback.format_stack()[:-1]
+            tb1_str = "".join(tb1)
+            def on_done(fut_: concurrent.futures.Future):
+                assert fut_.done()
+                if fut_.cancelled():
+                    _logger.debug(f"func cancelled. {func=}.")
+                elif exc := fut_.exception():
+                    # note: We explicitly log the first part of the traceback, tb1_str.
+                    #       The second part gets logged by setting "exc_info".
+                    _logger.error(
+                        f"func errored. {func=}. {exc=}"
+                        f"\n{tb1_str}", exc_info=exc)
+            fut.add_done_callback(on_done)
 
 
 class OrderedDictWithIndex(OrderedDict):
@@ -1826,7 +1862,6 @@ class CallbackManager(Logger):
         Logger.__init__(self)
         self.callback_lock = threading.Lock()
         self.callbacks = defaultdict(list)      # note: needs self.callback_lock
-        self._running_cb_futs = set()
 
     def register_callback(self, func, events):
         with self.callback_lock:
@@ -1851,25 +1886,15 @@ class CallbackManager(Logger):
         for callback in callbacks:
             if asyncio.iscoroutinefunction(callback):  # async cb
                 fut = asyncio.run_coroutine_threadsafe(callback(*args), loop)
-                # keep strong references around to avoid GC issues:
-                self._running_cb_futs.add(fut)
                 def on_done(fut_: concurrent.futures.Future):
                     assert fut_.done()
-                    self._running_cb_futs.remove(fut_)
                     if fut_.cancelled():
                         self.logger.debug(f"cb cancelled. {event=}.")
                     elif exc := fut_.exception():
                         self.logger.error(f"cb errored. {event=}. {exc=}", exc_info=exc)
                 fut.add_done_callback(on_done)
             else:  # non-async cb
-                # note: the cb needs to run in the asyncio thread
-                if get_running_loop() == loop:
-                    # run callback immediately, so that it is guaranteed
-                    # to have been executed when this method returns
-                    callback(*args)
-                else:
-                    # note: if cb raises, asyncio will log the exception
-                    loop.call_soon_threadsafe(callback, *args)
+                run_sync_function_on_asyncio_thread(partial(callback, *args), block=False)
 
 
 callback_mgr = CallbackManager()
@@ -2250,6 +2275,7 @@ class LightningHistoryItem(NamedTuple):
     group_id: Optional[str]
     timestamp: int
     label: str
+    direction: Optional[int]
     def to_dict(self):
         return {
             'type': self.type,
@@ -2262,4 +2288,5 @@ class LightningHistoryItem(NamedTuple):
             'preimage': self.preimage,
             'group_id': self.group_id,
             'ln_value': Satoshis(Decimal(self.amount_msat) / 1000),
+            'direction': self.direction,
         }

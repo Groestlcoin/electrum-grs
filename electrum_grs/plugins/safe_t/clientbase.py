@@ -10,7 +10,7 @@ from electrum_grs.keystore import bip39_normalize_passphrase
 from electrum_grs.bip32 import BIP32Node, convert_bip32_strpath_to_intpath
 from electrum_grs.logging import Logger
 from electrum_grs.plugin import runs_in_hwd_thread
-from electrum_grs.plugins.hw_wallet.plugin import HardwareClientBase, HardwareHandlerBase
+from electrum_grs.hw_wallet.plugin import HardwareClientBase, HardwareHandlerBase
 
 
 class GuiMixin(object):

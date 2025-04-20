@@ -33,10 +33,13 @@ ApplicationWindow
 
     property alias stack: mainStackView
     property alias keyboardFreeZone: _keyboardFreeZone
+    property alias infobanner: _infobanner
 
     property variant activeDialogs: []
 
     property var _exceptionDialog
+
+    property var pluginobjects: ({})
 
     property QtObject appMenu: Menu {
         id: menu
@@ -244,22 +247,34 @@ ApplicationWindow
         }
     }
 
-    StackView {
-        id: mainStackView
+    ColumnLayout {
         width: parent.width
         height: _keyboardFreeZone.height - header.height
-        initialItem: Component {
-            WalletMainView {}
+        spacing: 0
+
+        InfoBanner {
+            id: _infobanner
+            Layout.fillWidth: true
         }
 
-        function getRoot() {
-            return mainStackView.get(0)
-        }
-        function pushOnRoot(item) {
-            if (mainStackView.depth > 1) {
-                mainStackView.replace(mainStackView.get(1), item)
-            } else {
-                mainStackView.push(item)
+        StackView {
+            id: mainStackView
+            Layout.fillHeight: true
+            Layout.fillWidth: true
+
+            initialItem: Component {
+                WalletMainView {}
+            }
+
+            function getRoot() {
+                return mainStackView.get(0)
+            }
+            function pushOnRoot(item) {
+                if (mainStackView.depth > 1) {
+                    mainStackView.replace(mainStackView.get(1), item)
+                } else {
+                    mainStackView.push(item)
+                }
             }
         }
     }
@@ -627,6 +642,43 @@ ApplicationWindow
             })
             app._exceptionDialog.open()
         }
+        function onPluginLoaded(name) {
+            console.log('plugin ' + name + ' loaded')
+            var loader = AppController.plugin(name).loader
+            if (loader == undefined)
+                return
+            var url = Qt.resolvedUrl('../../../plugins/' + name + '/qml/' + loader)
+            var comp = Qt.createComponent(url)
+            if (comp.status == Component.Error) {
+                console.log('Could not find/parse PluginLoader for plugin ' + name)
+                console.log(comp.errorString())
+                return
+            }
+            var obj = comp.createObject(app)
+            if (obj != null)
+                app.pluginobjects[name] = obj
+        }
+    }
+
+    function pluginsComponentsByName(comp_name) {
+        // return named QML components from plugins
+        var plugins = AppController.plugins
+        var result = []
+        for (var i=0; i < plugins.length; i++) {
+            if (!plugins[i].enabled)
+                continue
+            var pluginobject = app.pluginobjects[plugins[i].name]
+            if (!pluginobject)
+                continue
+            if (!(comp_name in pluginobject))
+                continue
+            var comp = pluginobject[comp_name]
+            if (!comp)
+                continue
+
+            result.push(comp)
+        }
+        return result
     }
 
     Connections {

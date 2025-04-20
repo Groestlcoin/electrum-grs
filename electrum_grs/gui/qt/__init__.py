@@ -38,8 +38,8 @@ except Exception as e:
         "Error: Could not import PyQt6. On Linux systems, "
         "you may try 'sudo apt-get install python3-pyqt6'") from e
 
-from PyQt6.QtGui import QGuiApplication
-from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QWidget, QMenu, QMessageBox, QDialog
+from PyQt6.QtGui import QGuiApplication, QCursor
+from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QWidget, QMenu, QMessageBox, QDialog, QToolTip
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer, Qt
 
 import PyQt6.QtCore as QtCore
@@ -158,11 +158,6 @@ class ElectrumGui(BaseElectrumGui, Logger):
         self._default_qtstylesheet = self.app.styleSheet()
         self.reload_app_stylesheet()
 
-        # always load 2fa
-        self.plugins.load_plugin_by_name('trustedcoin')
-
-        run_hook('init_qt', self)
-
     def _init_tray(self):
         self.tray = QSystemTrayIcon(self.tray_icon(), None)
         self.tray.setToolTip('Electrum-GRS')
@@ -208,6 +203,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
             m = self.tray.contextMenu()
             m.clear()
         network = self.daemon.network
+        m.addAction(_("Plugins"), self.show_plugins_dialog)
         if network:
             m.addAction(_("Network"), self.show_network_dialog)
         if network and network.lngossip:
@@ -293,6 +289,11 @@ class ElectrumGui(BaseElectrumGui, Logger):
             self.lightning_dialog = LightningDialog(self)
         self.lightning_dialog.bring_to_top()
 
+    def show_plugins_dialog(self):
+        from .plugins_dialog import PluginsDialog
+        d = PluginsDialog(self.config, self.plugins, gui_object=self)
+        d.exec()
+
     def show_network_dialog(self, proxy_tab=False):
         if self.network_dialog:
             self.network_dialog.show(proxy_tab=proxy_tab)
@@ -321,6 +322,11 @@ class ElectrumGui(BaseElectrumGui, Logger):
                     self._num_wizards_in_progress -= 1
                 self._maybe_quit_if_no_windows_open()
         return wrapper
+
+    def get_window_for_wallet(self, wallet):
+        for window in self.windows:
+            if window.wallet.storage.path == wallet.storage.path:
+                return window
 
     @count_wizards_in_progress
     def start_new_window(
@@ -371,11 +377,9 @@ class ElectrumGui(BaseElectrumGui, Logger):
                 wallet = self._start_wizard_to_select_or_create_wallet(path)
             if not wallet:
                 return
+            window = self.get_window_for_wallet(wallet)
             # create or raise window
-            for window in self.windows:
-                if window.wallet.storage.path == wallet.storage.path:
-                    break
-            else:
+            if not window:
                 window = self._create_window_for_wallet(wallet)
         except UserCancelled:
             return
@@ -438,8 +442,10 @@ class ElectrumGui(BaseElectrumGui, Logger):
         else:
             wallet_file = d['wallet_name']
 
+        password = d.get('password') or None  # convert '' to None
+
         try:
-            wallet = self.daemon.load_wallet(wallet_file, d['password'], upgrade=True)
+            wallet = self.daemon.load_wallet(wallet_file, password, upgrade=True)
             return wallet
         except WalletRequiresSplit as e:
             wizard.run_split(wallet_file, e._split_data)
@@ -450,8 +456,8 @@ class ElectrumGui(BaseElectrumGui, Logger):
             action = db.get_action()
             assert action[1] == 'accept_terms_of_use', 'only support for resuming trustedcoin split setup'
             k1 = load_keystore(db, 'x1')
-            if 'password' in d and d['password']:
-                xprv = k1.get_master_private_key(d['password'])
+            if password is not None:
+                xprv = k1.get_master_private_key(password)
             else:
                 xprv = db.get('x1')['xprv']
                 if not is_xprv(xprv):
@@ -485,7 +491,15 @@ class ElectrumGui(BaseElectrumGui, Logger):
         if not self.windows:
             self.config.save_last_wallet(window.wallet)
         run_hook('on_close_window', window)
-        self.daemon.stop_wallet(window.wallet.storage.path)
+        if window.should_stop_wallet_on_close:
+            self.daemon.stop_wallet(window.wallet.storage.path)
+
+    def reload_windows(self):
+        for window in list(self.windows):
+            wallet = window.wallet
+            window.should_stop_wallet_on_close = False
+            window.close()
+            self._create_window_for_wallet(wallet)
 
     def init_network(self):
         """Start the network, including showing a first-start network dialog if config does not exist."""
@@ -546,3 +560,9 @@ class ElectrumGui(BaseElectrumGui, Logger):
         if hasattr(PyQt6, "__path__"):
             ret["pyqt.path"] = ", ".join(PyQt6.__path__ or [])
         return ret
+
+    def do_copy(self, text: str, *, title: str = None) -> None:
+        self.app.clipboard().setText(text)
+        message = _("Text copied to Clipboard") if title is None else _("{} copied to Clipboard").format(title)
+        # tooltip cannot be displayed immediately when called from a menu; wait 200ms
+        self.timer.singleShot(200, lambda: QToolTip.showText(QCursor.pos(), message, None))

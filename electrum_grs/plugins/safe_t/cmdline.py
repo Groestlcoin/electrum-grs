@@ -1,6 +1,7 @@
 from electrum_grs.plugin import hook
+from electrum_grs.hw_wallet import CmdLineHandler
+
 from .safe_t import SafeTPlugin
-from ..hw_wallet import CmdLineHandler
 
 class Plugin(SafeTPlugin):
     handler = CmdLineHandler()

@@ -513,6 +513,10 @@ class QEWallet(AuthMixin, QObject, QtEventListener):
             self._lightningcanreceive.satsInt = int(self.wallet.lnworker.num_sats_can_receive())
         return self._lightningcanreceive
 
+    @pyqtProperty(bool, notify=balanceChanged)
+    def isLowReserve(self):
+        return self.wallet.is_low_reserve()
+
     @pyqtProperty(QEAmount, notify=dataChanged)
     def minChannelFunding(self):
         return self._minchannelfunding
@@ -847,6 +851,6 @@ class QEWallet(AuthMixin, QObject, QtEventListener):
             amount = tx.output_value()
         except NotEnoughFunds as e:
             self._logger.debug(str(e))
-            message = self.wallet.get_text_not_enough_funds_mentioning_frozen()
+            message = self.wallet.get_text_not_enough_funds_mentioning_frozen(for_amount='!')
 
         return amount, message
