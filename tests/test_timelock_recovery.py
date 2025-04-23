@@ -1,14 +1,14 @@
 from io import StringIO
 import json
 import os, sys
-from electrum.bitcoin import address_to_script
-from electrum.fee_policy import FixedFeePolicy
-from electrum.plugins.timelock_recovery.timelock_recovery import TimelockRecoveryContext
-from electrum.simple_config import SimpleConfig
-from electrum.storage import WalletStorage
-from electrum.transaction import PartialTxOutput
-from electrum.wallet import Wallet
-from electrum.wallet_db import WalletDB
+from electrum_grs.bitcoin import address_to_script
+from electrum_grs.fee_policy import FixedFeePolicy
+from electrum_grs.plugins.timelock_recovery.timelock_recovery import TimelockRecoveryContext
+from electrum_grs.simple_config import SimpleConfig
+from electrum_grs.storage import WalletStorage
+from electrum_grs.transaction import PartialTxOutput
+from electrum_grs.wallet import Wallet
+from electrum_grs.wallet_db import WalletDB
 
 from . import ElectrumTestCase
 

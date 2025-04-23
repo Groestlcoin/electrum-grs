@@ -1,14 +1,14 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable, List, Optional, Sequence, Tuple
-from electrum.bitcoin import address_to_script
-from electrum.plugin import BasePlugin
-from electrum.transaction import PartialTxOutput, PartialTxInput, TxOutpoint
-from electrum.util import bfh
+from electrum_grs.bitcoin import address_to_script
+from electrum_grs.plugin import BasePlugin
+from electrum_grs.transaction import PartialTxOutput, PartialTxInput, TxOutpoint
+from electrum_grs.util import bfh
 
 if TYPE_CHECKING:
-    from electrum.gui.qt import ElectrumWindow
-    from electrum.transaction import PartialTransaction, TxOutput
-    from electrum.wallet import Abstract_Wallet
+    from electrum_grs.gui.qt import ElectrumWindow
+    from electrum_grs.transaction import PartialTransaction, TxOutput
+    from electrum_grs.wallet import Abstract_Wallet
 
 ALERT_ADDRESS_LABEL = "Timelock Recovery Alert Address"
 CANCELLATION_ADDRESS_LABEL = "Timelock Recovery Cancellation Address"

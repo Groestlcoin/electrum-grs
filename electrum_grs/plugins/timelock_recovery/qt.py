@@ -29,25 +29,25 @@ from PyQt6.QtGui import (QImage, QPainter, QFont, QIntValidator, QAction,
 from PyQt6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QMenu, QCheckBox, QToolButton,
                              QPushButton, QLineEdit, QScrollArea, QGridLayout, QFileDialog, QMessageBox)
 
-from electrum import constants, version
-from electrum.gui.common_qt.util import draw_qr, get_font_id
-from electrum.gui.qt.paytoedit import PayToEdit
-from electrum.payment_identifier import PaymentIdentifierType
-from electrum.plugin import hook
-from electrum.i18n import _
-from electrum.transaction import PartialTxOutput
-from electrum.util import NotEnoughFunds, make_dir
-from electrum.gui.qt.util import ColorScheme, WindowModalDialog, Buttons, HelpLabel
-from electrum.gui.qt.util import read_QIcon_from_bytes, read_QPixmap_from_bytes, WaitingDialog
-from electrum.fee_policy import FeePolicy
-from electrum.gui.qt.fee_slider import FeeSlider, FeeComboBox
+from electrum_grs import constants, version
+from electrum_grs.gui.common_qt.util import draw_qr, get_font_id
+from electrum_grs.gui.qt.paytoedit import PayToEdit
+from electrum_grs.payment_identifier import PaymentIdentifierType
+from electrum_grs.plugin import hook
+from electrum_grs.i18n import _
+from electrum_grs.transaction import PartialTxOutput
+from electrum_grs.util import NotEnoughFunds, make_dir
+from electrum_grs.gui.qt.util import ColorScheme, WindowModalDialog, Buttons, HelpLabel
+from electrum_grs.gui.qt.util import read_QIcon_from_bytes, read_QPixmap_from_bytes, WaitingDialog
+from electrum_grs.fee_policy import FeePolicy
+from electrum_grs.gui.qt.fee_slider import FeeSlider, FeeComboBox
 
 from .timelock_recovery import TimelockRecoveryPlugin, TimelockRecoveryContext
 
 
 if TYPE_CHECKING:
-    from electrum.gui.qt import ElectrumGui
-    from electrum.gui.qt.main_window import ElectrumWindow
+    from electrum_grs.gui.qt import ElectrumGui
+    from electrum_grs.gui.qt.main_window import ElectrumWindow
 
 
 AGREEMENT_TEXT = "I understand that the Timelock Recovery plan will be broken if I keep using this wallet"
