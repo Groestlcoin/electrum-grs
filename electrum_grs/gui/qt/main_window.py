@@ -137,8 +137,9 @@ def protected(func):
     def request_password(self, *args, **kwargs):
         parent = self.top_level_window()
         password = None
+        msg = kwargs.get('message')
         while self.wallet.has_keystore_encryption():
-            password = self.password_dialog(parent=parent)
+            password = self.password_dialog(parent=parent, msg=msg)
             if password is None:
                 # User cancelled password input
                 return
@@ -1118,8 +1119,17 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         *,
         external_keypairs: Mapping[bytes, bytes] = None,
         payment_identifier: PaymentIdentifier = None,
+        show_sign_button: bool = True,
+        show_broadcast_button: bool = True,
     ):
-        show_transaction(tx, parent=self, external_keypairs=external_keypairs, payment_identifier=payment_identifier)
+        show_transaction(
+            tx,
+            parent=self,
+            external_keypairs=external_keypairs,
+            payment_identifier=payment_identifier,
+            show_sign_button=show_sign_button,
+            show_broadcast_button=show_broadcast_button,
+        )
 
     def show_lightning_transaction(self, tx_item):
         from .lightning_tx_dialog import LightningTxDialog
@@ -1989,6 +1999,11 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             self.show_error(_("Wallet removed: {}").format(basename))
         else:
             self.show_error(_("Wallet file not found: {}").format(basename))
+
+    @protected
+    def get_password(self, password, message=None):
+        # may be used by plugins to get password
+        return password
 
     @protected
     def show_seed_dialog(self, password):
