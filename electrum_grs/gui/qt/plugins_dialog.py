@@ -242,7 +242,7 @@ class PluginsDialog(WindowModalDialog, MessageBoxMixin):
     def download_plugin_dialog(self):
         import os
         from .util import line_dialog
-        from electrum.util import UserCancelled
+        from electrum_grs.util import UserCancelled
         pubkey, salt = self.plugins.get_pubkey_bytes()
         if not pubkey:
             self.init_plugins_password()

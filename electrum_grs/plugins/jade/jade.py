@@ -26,9 +26,9 @@ _logger = get_logger(__name__)
 #import logging
 #LOGGING = logging.INFO
 #if LOGGING:
-#    logger = logging.getLogger('electrum.plugins.jade.jadepy.jade')
+#    logger = logging.getLogger('electrum_grs.plugins.jade.jadepy.jade')
 #    logger.setLevel(LOGGING)
-#    device_logger = logging.getLogger('electrum.plugins.jade.jadepy.jade-device')
+#    device_logger = logging.getLogger('electrum_grs.plugins.jade.jadepy.jade-device')
 #    device_logger.setLevel(LOGGING)
 
 try:

@@ -14,7 +14,7 @@ from electrum_grs.bip39_recovery import account_discovery
 from electrum_grs.logging import get_logger
 from electrum_grs.util import get_asyncio_loop, UserFacingException
 
-from electrum.gui.common_qt.util import TaskThread
+from electrum_grs.gui.common_qt.util import TaskThread
 
 from .util import WindowModalDialog, Buttons, CancelButton, OkButton
 
