@@ -224,7 +224,7 @@ class HardwareClientBase(ABC):
         So ideally, different devices would have different labels.
         """
         # When returning a constant here (i.e. not implementing the method in the way
-        # it is supposed to work), make sure the return value is in electrum.plugin.PLACEHOLDER_HW_CLIENT_LABELS
+        # it is supposed to work), make sure the return value is in electrum_grs.plugin.PLACEHOLDER_HW_CLIENT_LABELS
         return " "
 
     def get_soft_device_id(self) -> Optional[str]:

@@ -672,7 +672,7 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
         try:
             from electrum_grs.plot import plot_history, NothingToPlotException
         except Exception as e:
-            _logger.error(f"could not import electrum.plot. This feature needs matplotlib to be installed. exc={e!r}")
+            _logger.error(f"could not import electrum_grs.plot. This feature needs matplotlib to be installed. exc={e!r}")
             self.main_window.show_message(
                 _("Can't plot history.") + '\n' +
                 _("Perhaps some dependencies are missing...") + " (matplotlib?)" + '\n' +
