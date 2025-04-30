@@ -293,7 +293,7 @@ class SwapManager(Logger):
         self.invoices_to_pay[key] = 1000000000000 # lock
         try:
             invoice = self.wallet.get_invoice(key)
-            success, log = await self.lnworker.pay_invoice(invoice, attempts=10)
+            success, log = await self.lnworker.pay_invoice(invoice)
         except Exception as e:
             self.logger.info(f'exception paying {key}, will not retry')
             self.invoices_to_pay.pop(key, None)
@@ -1161,6 +1161,15 @@ class SwapManager(Logger):
         max_amt_oc = self.get_send_amount(max_amt_ln, is_reverse=False) or 0
         min_amt_oc = self.get_send_amount(self.get_min_amount(), is_reverse=False) or 0
         return max_amt_oc if max_amt_oc >= min_amt_oc else None
+
+    def client_max_amount_reverse_swap(self) -> Optional[int]:
+        """Returns None if swap is not possible"""
+        provider_max = self.get_provider_max_forward_amount()
+        max_ln_send = int(self.lnworker.num_sats_can_send())
+        max_swap_size = min(max_ln_send, provider_max)
+        if max_swap_size < self.get_min_amount():
+            return None
+        return max_swap_size
 
     def server_create_normal_swap(self, request):
         # normal for client, reverse for server

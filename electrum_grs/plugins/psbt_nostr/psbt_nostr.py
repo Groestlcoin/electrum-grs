@@ -38,11 +38,13 @@ from electrum_grs.i18n import _
 from electrum_grs.logging import Logger
 from electrum_grs.plugin import BasePlugin
 from electrum_grs.transaction import PartialTransaction, tx_from_any
-from electrum_grs.util import log_exceptions, OldTaskGroup, ca_path, trigger_callback, event_listener
+from electrum_grs.util import (log_exceptions, OldTaskGroup, ca_path, trigger_callback, event_listener,
+                           make_aiohttp_proxy_connector)
 from electrum_grs.wallet import Multisig_Wallet
 
 if TYPE_CHECKING:
     from electrum_grs.wallet import Abstract_Wallet
+    from aiohttp_socks import ProxyConnector
 
 # event kind used for nostr messages (with expiration tag)
 NOSTR_EVENT_KIND = 4
@@ -94,9 +96,8 @@ class CosignerWallet(Logger):
             if v < now() - self.KEEP_DELAY:
                 self.logger.info(f'deleting old event {k}')
                 self.known_events.pop(k)
-        self.relays = self.config.NOSTR_RELAYS.split(',')
         self.ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_path)
-        self.logger.info(f'relays {self.relays}')
+        self.logger.info(f"relays {self.config.NOSTR_RELAYS.split(',')}")
 
         self.cosigner_list = []  # type: List[Tuple[str, str]]
         self.nostr_pubkey = None
@@ -123,6 +124,14 @@ class CosignerWallet(Logger):
             self.logger.debug('starting handling of PSBTs')
             self.wallet_uptodate.set()
 
+    @event_listener
+    async def on_event_proxy_set(self, *args):
+        if not (self.network and self.nostr_pubkey):
+            return
+        await self.stop()
+        self.taskgroup = OldTaskGroup()
+        asyncio.run_coroutine_threadsafe(self.main_loop(), self.network.asyncio_loop)
+
     @log_exceptions
     async def main_loop(self):
         self.logger.info("starting taskgroup.")
@@ -140,15 +149,17 @@ class CosignerWallet(Logger):
 
     @asynccontextmanager
     async def nostr_manager(self):
+        if self.network.proxy and self.network.proxy.enabled:
+            proxy = make_aiohttp_proxy_connector(self.network.proxy, self.ssl_context)
+        else:
+            proxy: Optional['ProxyConnector'] = None
         manager_logger = self.logger.getChild('aionostr')
         manager_logger.setLevel("INFO")  # set to INFO because DEBUG is very spammy
         async with aionostr.Manager(
-                relays=self.relays,
+                relays=self.config.NOSTR_RELAYS.split(','),
                 private_key=self.nostr_privkey,
                 ssl_context=self.ssl_context,
-                # todo: add proxy support, first needs:
-                # https://github.com/spesmilo/electrum-aionostr/pull/8
-                proxy=None,
+                proxy=proxy,
                 log=manager_logger
         ) as manager:
             yield manager
