@@ -345,7 +345,7 @@ class Plugins(DaemonThread):
     def maybe_load_plugin_init_method(self, name: str) -> None:
         """Loads the __init__.py module of the plugin if it is not already loaded."""
         is_external = name in self.external_plugin_metadata
-        base_name = ('electrum_grs_external_plugins.' if is_external else 'electrum_grs.plugins.') + name
+        base_name = ('electrum_external_plugins.' if is_external else 'electrum_grs.plugins.') + name
         if base_name not in sys.modules:
             metadata = self.get_metadata(name)
             is_zip = metadata.get('is_zip', False)
@@ -376,7 +376,7 @@ class Plugins(DaemonThread):
         if not is_external:
             full_name = f'electrum_grs.plugins.{name}.{self.gui_name}'
         else:
-            full_name = f'electrum_grs_external_plugins.{name}.{self.gui_name}'
+            full_name = f'electrum_external_plugins.{name}.{self.gui_name}'
 
         spec = importlib.util.find_spec(full_name)
         if spec is None:
