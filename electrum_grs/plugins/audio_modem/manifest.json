@@ -5,5 +5,5 @@
   "requires": [["amodem", "http://github.com/romanz/amodem/"]],
   "author":"Roman Zeyde",
   "icon":"speaker.png",
-  "available_for": []
+  "available_for": ["qt"]
 }
