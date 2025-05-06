@@ -502,9 +502,6 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def has_channels(self):
         return self.lnworker is not None and len(self.lnworker._channels) > 0
 
-    def requires_unlock(self):
-        return self.config.ENABLE_ANCHOR_CHANNELS and self.has_channels()
-
     def can_have_lightning(self) -> bool:
         """ whether this wallet can create new channels """
         # we want static_remotekey to be a wallet address
@@ -556,6 +553,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         finally:  # even if we get cancelled
             if any([ks.is_requesting_to_be_rewritten_to_wallet_file for ks in self.get_keystores()]):
                 self.save_keystore()
+            self.db.prune_uninstalled_plugin_data(self.config.get_installed_plugins())
             self.save_db()
 
     def is_up_to_date(self) -> bool:
@@ -3098,9 +3096,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         # save changes. force full rewrite to rm remnants of old password
         if self.storage and self.storage.file_exists():
             self.db.write_and_force_consolidation()
-        # if wallet was previously unlocked, update password in memory
-        if self.requires_unlock():
-            self.unlock(new_pw)
+        # if wallet was previously unlocked, reset password_in_memory
+        self.lock_wallet()
 
     @abstractmethod
     def _update_password_for_keystore(self, old_pw: Optional[str], new_pw: Optional[str]) -> None:
@@ -3417,6 +3414,9 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         self.logger.info(f'unlocking wallet')
         self.check_password(password)
         self._password_in_memory = password
+
+    def lock_wallet(self):
+        self._password_in_memory = None
 
     def get_unlocked_password(self):
         return self._password_in_memory
