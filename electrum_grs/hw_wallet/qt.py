@@ -29,7 +29,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Union, Optional, Sequence, Tuple
 
 from PyQt6.QtCore import QObject, pyqtSignal, Qt
-from PyQt6.QtWidgets import QVBoxLayout, QLineEdit, QHBoxLayout, QLabel
+from PyQt6.QtWidgets import QVBoxLayout, QLineEdit, QHBoxLayout, QLabel, QMenu
 
 from electrum_grs.gui.common_qt.util import TaskThread
 from electrum_grs.gui.qt.password_dialog import PasswordLayout, PW_PASSPHRASE
@@ -41,8 +41,9 @@ from electrum_grs.gui.qt.util import read_QIcon_from_bytes
 
 from electrum_grs.i18n import _
 from electrum_grs.logging import Logger
-from electrum_grs.util import UserCancelled, UserFacingException
+from electrum_grs.util import UserCancelled, UserFacingException, ChoiceItem
 from electrum_grs.plugin import hook, DeviceUnpairableError
+from electrum_grs.wallet import Standard_Wallet
 
 from .plugin import OutdatedHwFirmwareException, HW_PluginBase, HardwareHandlerBase
 
@@ -98,9 +99,9 @@ class QtHandlerBase(HardwareHandlerBase, QObject, Logger):
             icon = read_QIcon_from_bytes(icon_bytes)
             button.setIcon(icon)
 
-    def query_choice(self, msg: str, labels: Sequence[Tuple]):
+    def query_choice(self, msg: str, choices: Sequence[ChoiceItem]):
         self.done.clear()
-        self.query_signal.emit(msg, labels)
+        self.query_signal.emit(msg, choices)
         self.done.wait()
         return self.choice
 
@@ -197,9 +198,9 @@ class QtHandlerBase(HardwareHandlerBase, QObject, Logger):
             self.dialog.accept()
             self.dialog = None
 
-    def win_query_choice(self, msg: str, labels: Sequence[Tuple]):
+    def win_query_choice(self, msg: str, choices: Sequence[ChoiceItem]):
         try:
-            self.choice = self.win.query_choice(msg, labels)
+            self.choice = self.win.query_choice(msg, choices)
         except UserCancelled:
             self.choice = None
         self.done.set()
@@ -299,3 +300,13 @@ class QtPluginBase(object):
 
     def create_handler(self, window: Union['ElectrumWindow', 'QENewWalletWizard']) -> 'QtHandlerBase':
         raise NotImplementedError()
+
+    def _add_menu_action(self, menu: QMenu, address: str, wallet: 'Abstract_Wallet'):
+        if not wallet.is_mine(address):
+            return
+        for keystore in wallet.get_keystores():
+            if type(keystore) == self.keystore_class:
+                def show_address(keystore=keystore):
+                    keystore.thread.add(partial(self.show_address, wallet, address, keystore=keystore))
+                device_name = "{} ({})".format(self.device, keystore.label)
+                menu.addAction(read_QIcon("eye1.png"), _("Show address on {}").format(device_name), show_address)
