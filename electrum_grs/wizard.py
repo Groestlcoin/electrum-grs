@@ -3,6 +3,8 @@ import os
 
 from typing import List, NamedTuple, Any, Dict, Optional, Tuple, TYPE_CHECKING
 
+from electrum_grs.gui.messages import TERMS_OF_USE_LATEST_VERSION
+
 from electrum_grs.i18n import _
 from electrum_grs.interface import ServerAddr
 from electrum_grs.keystore import hardware_keystore
@@ -20,6 +22,7 @@ if TYPE_CHECKING:
     from electrum_grs.daemon import Daemon
     from electrum_grs.plugin import Plugins
     from electrum_grs.keystore import Hardware_KeyStore
+    from electrum_grs.simple_config import SimpleConfig
 
 
 class WizardViewState(NamedTuple):
@@ -763,6 +766,33 @@ class ServerConnectWizard(AbstractWizard):
             initial_data = {}
         self.reset()
         start_view = 'welcome'
+        params = self.navmap[start_view].get('params', {})
+        self._current = WizardViewState(start_view, initial_data, params)
+        return self._current
+
+
+class TermsOfUseWizard(AbstractWizard):
+
+    _logger = get_logger(__name__)
+
+    def __init__(self, config: 'SimpleConfig'):
+        AbstractWizard.__init__(self)
+        self._config = config
+        self.navmap = {
+            'terms_of_use': {
+                'accept': self.accept_terms_of_use,
+                'last': True,
+            },
+        }
+
+    def accept_terms_of_use(self, _):
+        self._config.TERMS_OF_USE_ACCEPTED = TERMS_OF_USE_LATEST_VERSION
+
+    def start(self, initial_data: dict = None) -> WizardViewState:
+        if initial_data is None:
+            initial_data = {}
+        self.reset()
+        start_view = 'terms_of_use'
         params = self.navmap[start_view].get('params', {})
         self._current = WizardViewState(start_view, initial_data, params)
         return self._current

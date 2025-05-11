@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import ssl
-from typing import TYPE_CHECKING, Optional, Dict, Union, Sequence, Tuple, Iterable
+from typing import TYPE_CHECKING, Optional, Dict, Sequence, Tuple, Iterable, List
 from decimal import Decimal
 import math
 import time
@@ -1279,6 +1279,16 @@ class SwapManager(Logger):
         if swap:
             return swap.spending_txid if swap.is_reverse else swap.funding_txid
 
+    def get_pending_swaps(self) -> List[SwapData]:
+        """Returns a list of swaps with unconfirmed funding tx (which require us to stay online)."""
+        pending_swaps: List[SwapData] = []
+        for swap in self.swaps.values():
+            # note: adb.get_tx_height returns TX_HEIGHT_LOCAL if the txid is unknown
+            funding_height = self.lnworker.wallet.adb.get_tx_height(swap.funding_txid).height
+            spending_height = self.lnworker.wallet.adb.get_tx_height(swap.spending_txid).height
+            if funding_height > TX_HEIGHT_LOCAL and spending_height <= TX_HEIGHT_LOCAL:
+                pending_swaps.append(swap)
+        return pending_swaps
 
 class SwapServerTransport(Logger):
 
