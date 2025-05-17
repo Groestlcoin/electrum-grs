@@ -41,7 +41,7 @@ class MockNetwork(Logger):
 
     async def try_broadcasting(self, tx, name):
         for w in self.wallets:
-            w.adb.receive_tx_callback(tx, TX_HEIGHT_UNCONFIRMED)
+            w.adb.receive_tx_callback(tx, tx_height=TX_HEIGHT_UNCONFIRMED)
 
         self._tx_queue.put_nowait(tx)
         return tx.txid()
@@ -55,7 +55,7 @@ class MockNetwork(Logger):
 
 
 SWAP_FUNDING_TX = "01000000000101500e9d67647481864edfb020b5c45e1c40d90f06b0130f9faed1a5149c6d26450000000000ffffffff0226080300000000002200205059c44bf57534303ab8f090f06b7bde58f5d2522440247a1ff6b41bdca9348df312c20100000000160014021d4f3b17921d790e1c022367a5bb078ce4deb402483045022100d41331089a2031396a1db8e4dec6dda9cacefe1288644b92f8e08a23325aa19b02204159230691601f7d726e4e6e0b7124d3377620f400d699a01095f0b0a09ee26a012102d60315c72c0cefd41c6d07883c20b88be3fc37aac7912f0052722a95de0de71600000000"
-SWAP_CLAIM_TX = "02000000000101f9db8580febd5c0f85b6f1576c83f7739109e3a2d772743e3217e9537fea7e890000000000fdffffff017005030000000000160014b113a47f3718da3fd161339a6681c150fef2cfe30347304402206736066ce15d34eed20951a9d974a100a72dc034f9c878769ddf27f9a584dcb1022042b14d627b8e8465a3a129bb43c0bd8369f49bbcf473879b9a477263655f1f930120f1939b5723155713855d7ebea6e174f77d41d669269e7f138856c3de190e7a366a8201208763a914d7a62ef0270960fe23f0f351b28caadab62c21838821030bfd61153816df786036ea293edce851d3a4b9f4a1c66bdc1a17f00ffef3d6b167750334ef24b1752102fc8128f17f9e666ea281c702171ab16c1dd2a4337b71f08970f5aa10c608a93268ac00000000"
+SWAP_CLAIM_TX = "02000000000101f9db8580febd5c0f85b6f1576c83f7739109e3a2d772743e3217e9537fea7e89000000000001000000017005030000000000160014b113a47f3718da3fd161339a6681c150fef2cfe30347304402204c6d40103589b1a8177a37a824f0c66a3a7b22bc570b14c9e07965b56f6ace8f02203a35cffe0ab10de00f3e15ecf5aafdd2c7f6c62da11edd9054a1bce7a9e1455c0120f1939b5723155713855d7ebea6e174f77d41d669269e7f138856c3de190e7a366a8201208763a914d7a62ef0270960fe23f0f351b28caadab62c21838821030bfd61153816df786036ea293edce851d3a4b9f4a1c66bdc1a17f00ffef3d6b167750334ef24b1752102fc8128f17f9e666ea281c702171ab16c1dd2a4337b71f08970f5aa10c608a93268ac00000000"
 
 
 class TestTxBatcher(ElectrumTestCase):
@@ -121,7 +121,7 @@ class TestTxBatcher(ElectrumTestCase):
         assert output1 in tx1_prime.outputs()
         assert output2 in tx1_prime.outputs()
         # tx1 gets confirmed, tx2 gets removed
-        wallet.adb.receive_tx_callback(tx1, 1)
+        wallet.adb.receive_tx_callback(tx1, tx_height=1)
         tx_mined_status = wallet.adb.get_tx_height(tx1.txid())
         wallet.adb.add_verified_tx(tx1.txid(), tx_mined_status._replace(conf=1))
         assert wallet.adb.get_transaction(tx1.txid()) is not None
@@ -186,7 +186,8 @@ class TestTxBatcher(ElectrumTestCase):
             spending_txid=None,
             is_redeemed=False,
         )
-        wallet.adb.db.transactions[swap_data.funding_txid] = Transaction(SWAP_FUNDING_TX)
+        wallet.adb.db.transactions[swap_data.funding_txid] = tx = Transaction(SWAP_FUNDING_TX)
+        wallet.adb.receive_tx_callback(tx, tx_height=1)
         txin = PartialTxInput(
             prevout=TxOutpoint(txid=bytes.fromhex(swap_data.funding_txid), out_idx=0),
         )
@@ -194,7 +195,6 @@ class TestTxBatcher(ElectrumTestCase):
         txin, locktime = SwapManager.create_claim_txin(txin=txin, swap=swap_data)
         sweep_info = SweepInfo(
             txin=txin,
-            csv_delay=0,
             cltv_abs=locktime,
             txout=None,
             name='swap claim',

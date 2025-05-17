@@ -38,30 +38,32 @@ class WCWelcome(WizardComponent):
         WizardComponent.__init__(self, parent, wizard, title='Network Configuration')
         self.wizard_title = _('Electrum Groestlcoin Wallet')
 
-        self.help_label = QLabel()
-        self.help_label.setText("\n".join([
-            _("Optional settings to customize your network connection."),
-            _("If you are unsure what this is, leave them unchecked and Electrum will automatically "
-              "select servers."),
-        ]))
-        self.help_label.setWordWrap(True)
+        self.first_help_label = QLabel()
+        self.first_help_label.setText(_("Optional settings to customize your network connection") + ":")
+        self.first_help_label.setWordWrap(True)
 
-        self.config_proxy_w = QCheckBox(_('Configure Proxy'))
+        self.config_proxy_w = QCheckBox(_('Use Proxy'))
         self.config_proxy_w.setChecked(False)
         self.config_proxy_w.stateChanged.connect(self.on_updated)
-        self.config_server_w = QCheckBox(_('Select Server'))
+        self.config_server_w = QCheckBox(_('Select Electrum Server'))
         self.config_server_w.setChecked(False)
         self.config_server_w.stateChanged.connect(self.on_updated)
         options_w = QWidget()
         vbox = QVBoxLayout()
         vbox.addWidget(self.config_proxy_w)
         vbox.addWidget(self.config_server_w)
-        vbox.addStretch(1)
         options_w.setLayout(vbox)
 
-        self.layout().addWidget(self.help_label)
-        self.layout().addSpacing(30)
-        self.layout().addWidget(options_w, False, Qt.AlignmentFlag.AlignLeft)
+        self.second_help_label = QLabel()
+        self.second_help_label.setText(
+            _("If you are unsure what these options are, leave them unchecked.")
+        )
+        self.second_help_label.setWordWrap(True)
+
+        self.layout().addWidget(self.first_help_label)
+        self.layout().addWidget(options_w)
+        self.layout().addWidget(self.second_help_label)
+        self.layout().addStretch(1)
         self._valid = True
 
     def apply(self):

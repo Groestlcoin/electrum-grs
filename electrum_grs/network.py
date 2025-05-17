@@ -1094,15 +1094,15 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         except (RequestTimedOut, asyncio.CancelledError, asyncio.TimeoutError):
             raise  # pass-through
         except aiorpcx.jsonrpc.CodeMessageError as e:
-            self.logger.info(f"broadcast_transaction error [DO NOT TRUST THIS MESSAGE]: {error_text_str_to_safe_str(repr(e))}")
+            self.logger.info(f"broadcast_transaction error [DO NOT TRUST THIS MESSAGE]: {error_text_str_to_safe_str(repr(e))}. tx={str(tx)}")
             raise TxBroadcastServerReturnedError(self.sanitize_tx_broadcast_response(e.message)) from e
         except BaseException as e:  # intentional BaseException for sanity!
-            self.logger.info(f"broadcast_transaction error2 [DO NOT TRUST THIS MESSAGE]: {error_text_str_to_safe_str(repr(e))}")
+            self.logger.info(f"broadcast_transaction error2 [DO NOT TRUST THIS MESSAGE]: {error_text_str_to_safe_str(repr(e))}. tx={str(tx)}")
             send_exception_to_crash_reporter(e)
             raise TxBroadcastUnknownError() from e
         if out != tx.txid():
             self.logger.info(f"unexpected txid for broadcast_transaction [DO NOT TRUST THIS MESSAGE]: "
-                             f"{error_text_str_to_safe_str(out)} != {tx.txid()}")
+                             f"{error_text_str_to_safe_str(out)} != {tx.txid()}. tx={str(tx)}")
             raise TxBroadcastHashMismatch(_("Server returned unexpected transaction ID."))
 
     async def try_broadcasting(self, tx, name) -> bool:
@@ -1222,18 +1222,25 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
                 return msg if msg else substring
         # https://github.com/bitcoin/bitcoin/blob/5bb64acd9d3ced6e6f95df282a1a0f8b98522cb0/src/rpc/rawtransaction.cpp
         # https://github.com/bitcoin/bitcoin/blob/5bb64acd9d3ced6e6f95df282a1a0f8b98522cb0/src/util/error.cpp
+        # https://github.com/bitcoin/bitcoin/blob/3f83c744ac28b700090e15b5dda2260724a56f49/src/common/messages.cpp#L126
         # grep "RPC_TRANSACTION"
         # grep "RPC_DESERIALIZATION_ERROR"
+        # grep "TransactionError"
         rawtransaction_error_messages = {
             r"Missing inputs": None,
             r"Inputs missing or spent": None,
             r"transaction already in block chain": None,
             r"Transaction already in block chain": None,
+            r"Transaction outputs already in utxo set": None,
             r"TX decode failed": None,
             r"Peer-to-peer functionality missing or disabled": None,
             r"Transaction rejected by AcceptToMemoryPool": None,
             r"AcceptToMemoryPool failed": None,
+            r"Transaction rejected by mempool": None,
+            r"Mempool internal error": None,
             r"Fee exceeds maximum configured by user": None,
+            r"Unspendable output exceeds maximum configured by user": None,
+            r"Transaction rejected due to invalid package": None,
         }
         for substring in rawtransaction_error_messages:
             if substring in server_msg:

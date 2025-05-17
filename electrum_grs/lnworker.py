@@ -39,7 +39,8 @@ from .util import (
     UnrelatedTransactionException, LightningHistoryItem
 )
 from .fee_policy import FeePolicy, FixedFeePolicy
-from .fee_policy import FEERATE_FALLBACK_STATIC_FEE, FEE_LN_ETA_TARGET, FEE_LN_LOW_ETA_TARGET, FEERATE_PER_KW_MIN_RELAY_LIGHTNING
+from .fee_policy import (FEERATE_FALLBACK_STATIC_FEE, FEE_LN_ETA_TARGET, FEE_LN_LOW_ETA_TARGET,
+                         FEERATE_PER_KW_MIN_RELAY_LIGHTNING, FEE_LN_MINIMUM_ETA_TARGET)
 from .invoices import Invoice, PR_UNPAID, PR_PAID, PR_INFLIGHT, PR_FAILED, LN_EXPIRY_NEVER, BaseInvoice
 from .bitcoin import COIN, opcodes, make_op_return, address_to_scripthash, DummyAddress
 from .bip32 import BIP32Node
@@ -845,7 +846,7 @@ class LNWallet(LNWorker):
         self.lnwatcher = LNWatcher(self)
         self.lnrater: LNRater = None
         self.payment_info = self.db.get_dict('lightning_payments')     # RHASH -> amount, direction, is_paid
-        self.preimages = self.db.get_dict('lightning_preimages')   # RHASH -> preimage
+        self._preimages = self.db.get_dict('lightning_preimages')   # RHASH -> preimage
         self._bolt11_cache = {}
         # note: this sweep_address is only used as fallback; as it might result in address-reuse
         self.logs = defaultdict(list)  # type: Dict[str, List[HtlcLog]]  # key is RHASH  # (not persisted)
@@ -1915,20 +1916,24 @@ class LNWallet(LNWorker):
         else:
             return random.choice(list(hardcoded_trampoline_nodes().values())).pubkey
 
-    def suggest_splits(
+    def suggest_payment_splits(
         self,
         *,
         amount_msat: int,
         final_total_msat: int,
         my_active_channels: Sequence[Channel],
         invoice_features: LnFeatures,
-        r_tags,
+        r_tags: Sequence[Sequence[Sequence[Any]]],
+        receiver_pubkey: bytes,
     ) -> List['SplitConfigRating']:
         channels_with_funds = {
             (chan.channel_id, chan.node_id): int(chan.available_to_spend(HTLCOwner.LOCAL))
             for chan in my_active_channels
         }
-        self.logger.info(f"channels_with_funds: {channels_with_funds}")
+        # if we have a direct channel it's preferrable to send a single part directly through this
+        # channel, so this bool will disable excluding single part payments
+        have_direct_channel = any(chan.node_id == receiver_pubkey for chan in my_active_channels)
+        self.logger.info(f"channels_with_funds: {channels_with_funds}, {have_direct_channel=}")
         exclude_single_part_payments = False
         if self.uses_trampoline():
             # in the case of a legacy payment, we don't allow splitting via different
@@ -1944,22 +1949,18 @@ class LNWallet(LNWorker):
             if invoice_features.supports(LnFeatures.BASIC_MPP_OPT) and not self.config.TEST_FORCE_DISABLE_MPP:
                 # if amt is still large compared to total_msat, split it:
                 if (amount_msat / final_total_msat > self.MPP_SPLIT_PART_FRACTION
-                        and amount_msat > self.MPP_SPLIT_PART_MINAMT_MSAT):
+                        and amount_msat > self.MPP_SPLIT_PART_MINAMT_MSAT
+                        and not have_direct_channel):
                     exclude_single_part_payments = True
 
-        def get_splits():
-            return suggest_splits(
-                amount_msat,
-                channels_with_funds,
-                exclude_single_part_payments=exclude_single_part_payments,
-                exclude_multinode_payments=exclude_multinode_payments,
-                exclude_single_channel_splits=exclude_single_channel_splits
-            )
+        split_configurations = suggest_splits(
+            amount_msat,
+            channels_with_funds,
+            exclude_single_part_payments=exclude_single_part_payments,
+            exclude_multinode_payments=exclude_multinode_payments,
+            exclude_single_channel_splits=exclude_single_channel_splits
+        )
 
-        split_configurations = get_splits()
-        if not split_configurations and exclude_single_part_payments:
-            exclude_single_part_payments = False
-            split_configurations = get_splits()
         self.logger.info(f'suggest_split {amount_msat} returned {len(split_configurations)} configurations')
         return split_configurations
 
@@ -1989,12 +1990,13 @@ class LNWallet(LNWorker):
                 chan.is_active() and not chan.is_frozen_for_sending()]
         # try random order
         random.shuffle(my_active_channels)
-        split_configurations = self.suggest_splits(
+        split_configurations = self.suggest_payment_splits(
             amount_msat=amount_msat,
             final_total_msat=paysession.amount_to_pay,
             my_active_channels=my_active_channels,
             invoice_features=paysession.invoice_features,
             r_tags=paysession.r_tags,
+            receiver_pubkey=paysession.invoice_pubkey,
         )
         for sc in split_configurations:
             is_multichan_mpp = len(sc.config.items()) > 1
@@ -2043,7 +2045,7 @@ class LNWallet(LNWorker):
                         self.logger.info(f'per trampoline fees: {per_trampoline_fees}')
                         for chan_id, part_amount_msat in trampoline_parts:
                             chan = self.channels[chan_id]
-                            margin = chan.available_to_spend(LOCAL, strict=True) - part_amount_msat
+                            margin = chan.available_to_spend(LOCAL) - part_amount_msat
                             delta_fee = min(per_trampoline_fees, margin)
                             # TODO: distribute trampoline fee over several channels?
                             part_amount_msat_with_fees = part_amount_msat + delta_fee
@@ -2286,19 +2288,26 @@ class LNWallet(LNWorker):
     def save_preimage(self, payment_hash: bytes, preimage: bytes, *, write_to_disk: bool = True):
         if sha256(preimage) != payment_hash:
             raise Exception("tried to save incorrect preimage for payment_hash")
-        self.preimages[payment_hash.hex()] = preimage.hex()
+        if self._preimages.get(payment_hash.hex()) is not None:
+            return  # we already have this preimage
+        self.logger.debug(f"saving preimage for {payment_hash.hex()}")
+        self._preimages[payment_hash.hex()] = preimage.hex()
         if write_to_disk:
             self.wallet.save_db()
 
     def get_preimage(self, payment_hash: bytes) -> Optional[bytes]:
         assert isinstance(payment_hash, bytes), f"expected bytes, but got {type(payment_hash)}"
-        preimage_hex = self.preimages.get(payment_hash.hex())
+        preimage_hex = self._preimages.get(payment_hash.hex())
         if preimage_hex is None:
             return None
         preimage_bytes = bytes.fromhex(preimage_hex)
         if sha256(preimage_bytes) != payment_hash:
             raise Exception("found incorrect preimage for payment_hash")
         return preimage_bytes
+
+    def get_preimage_hex(self, payment_hash: str) -> Optional[str]:
+        preimage_bytes = self.get_preimage(bytes.fromhex(payment_hash)) or b""
+        return preimage_bytes.hex() or None
 
     def get_payment_info(self, payment_hash: bytes) -> Optional[PaymentInfo]:
         """returns None if payment_hash is a payment we are forwarding"""
@@ -3034,16 +3043,22 @@ class LNWallet(LNWorker):
                 else:
                     await self.taskgroup.spawn(self.reestablish_peer_for_given_channel(chan))
 
-    def current_target_feerate_per_kw(self) -> Optional[int]:
+    def current_target_feerate_per_kw(self, *, has_anchors: bool) -> Optional[int]:
         if self.network.fee_estimates.has_data():
-            feerate_per_kvbyte = self.network.fee_estimates.eta_target_to_fee(FEE_LN_ETA_TARGET)
+            target: int = FEE_LN_MINIMUM_ETA_TARGET if has_anchors else FEE_LN_ETA_TARGET
+            feerate_per_kvbyte = self.network.fee_estimates.eta_target_to_fee(target)
+            if has_anchors:
+                # set a floor of 5 sat/vb to have some safety margin in case the mempool
+                # grows quickly
+                feerate_per_kvbyte = max(feerate_per_kvbyte, 5000)
         else:
             if constants.net is not constants.BitcoinRegtest:
                 return None
             feerate_per_kvbyte = FEERATE_FALLBACK_STATIC_FEE
         return max(FEERATE_PER_KW_MIN_RELAY_LIGHTNING, feerate_per_kvbyte // 4)
 
-    def current_low_feerate_per_kw(self) -> Optional[int]:
+    def current_low_feerate_per_kw_srk_channel(self) -> Optional[int]:
+        """Gets low feerate for static remote key channels."""
         if constants.net is constants.BitcoinRegtest:
             feerate_per_kvbyte = 0
         else:
@@ -3052,7 +3067,7 @@ class LNWallet(LNWorker):
             feerate_per_kvbyte = self.network.fee_estimates.eta_target_to_fee(FEE_LN_LOW_ETA_TARGET) or 0
         low_feerate_per_kw = max(FEERATE_PER_KW_MIN_RELAY_LIGHTNING, feerate_per_kvbyte // 4)
         # make sure this is never higher than the target feerate:
-        current_target_feerate = self.current_target_feerate_per_kw()
+        current_target_feerate = self.current_target_feerate_per_kw(has_anchors=False)
         if not current_target_feerate:
             return None
         low_feerate_per_kw = min(low_feerate_per_kw, current_target_feerate)

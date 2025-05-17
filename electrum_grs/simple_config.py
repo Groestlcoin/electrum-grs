@@ -691,6 +691,7 @@ If this is enabled, other nodes cannot open a channel to you. Channel recovery d
     )
     LIGHTNING_TO_SELF_DELAY_CSV = ConfigVar('lightning_to_self_delay', default=7 * 144, type_=int)
     LIGHTNING_MAX_FUNDING_SAT = ConfigVar('lightning_max_funding_sat', default=LN_MAX_FUNDING_SAT_LEGACY, type_=int)
+    LIGHTNING_MAX_HTLC_VALUE_IN_FLIGHT_MSAT = ConfigVar('lightning_max_htlc_value_in_flight_msat', default=None, type_=int)
     INITIAL_TRAMPOLINE_FEE_LEVEL = ConfigVar('initial_trampoline_fee_level', default=1, type_=int)
     LIGHTNING_PAYMENT_FEE_MAX_MILLIONTHS = ConfigVar(
         'lightning_payment_fee_max_millionths', default=10_000,  # 1%
@@ -900,9 +901,7 @@ def read_user_config(path: Optional[str]) -> Dict[str, Any]:
         with open(config_path, "r", encoding='utf-8') as f:
             data = f.read()
         result = json.loads(data)
-    except Exception as exc:
-        _logger.warning(f"Cannot read config file at {config_path}: {exc}")
-        return {}
-    if not type(result) is dict:
-        return {}
+        assert isinstance(result, dict), "config file is not a dict"
+    except Exception as e:
+        raise ValueError(f"Invalid config file at {config_path}: {str(e)}")
     return result

@@ -47,6 +47,7 @@ class WCTermsOfUseScreen(WizardComponent):
         hbox_img.addStretch(1)
 
         self.layout().addLayout(hbox_img)
+        self.layout().addSpacing(15)
 
         self.tos_label = WWLabel()
         self.tos_label.setText(messages.MSG_TERMS_OF_USE)
@@ -54,7 +55,7 @@ class WCTermsOfUseScreen(WizardComponent):
         self._valid = False
 
         # Find the scroll area and connect to its scrollbar
-        QTimer.singleShot(0, self.check_scroll_position)
+        QTimer.singleShot(100, self.check_scroll_position)
         self.window().installEventFilter(self)
 
     def eventFilter(self, obj, event):

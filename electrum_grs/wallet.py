@@ -438,6 +438,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         # true when synchronized. this is stricter than adb.is_up_to_date():
         # to-be-generated (HD) addresses are also considered here (gap-limit-roll-forward)
         self._up_to_date = False
+        self.up_to_date_changed_event = asyncio.Event()
 
         self.test_addresses_sanity()
         if self.storage and self.has_storage_encryption():
@@ -588,6 +589,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         if status_changed or up_to_date:  # suppress False->False transition, as it is spammy
             util.trigger_callback('wallet_updated', self)
             util.trigger_callback('status')
+            self.up_to_date_changed_event.set()
+            self.up_to_date_changed_event.clear()
         if status_changed:
             self.logger.info(f'set_up_to_date: {up_to_date}')
 
@@ -1659,14 +1662,15 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         labels = []
         tx = self.adb.get_transaction(tx_hash)
         if tx:
-            for i in range(len(tx.outputs())):
-                outpoint = tx_hash + f':{i}'
-                if label := self.get_label_for_outpoint(outpoint):
-                    labels.append(label)
             for txin in tx.inputs():
                 outpoint = txin.prevout.to_str()
                 if label := self.get_label_for_outpoint(outpoint):
-                    labels.append(label)
+                    labels.append('sweep ' + label)
+            if not labels:
+                for i in range(len(tx.outputs())):
+                    outpoint = tx_hash + f':{i}'
+                    if label := self.get_label_for_outpoint(outpoint):
+                        labels.append(label)
 
         # note: we don't deserialize tx as the history calls us for every tx, and that would be slow
         if not self.db.get_txi_addresses(tx_hash):

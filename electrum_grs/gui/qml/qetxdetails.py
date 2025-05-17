@@ -14,7 +14,7 @@ from electrum_grs.fee_policy import FeePolicy
 
 from .qewallet import QEWallet
 from .qetypes import QEAmount
-from .util import QtEventListener, event_listener
+from .util import QtEventListener, qt_event_listener
 
 
 class QETxDetails(QObject, QtEventListener):
@@ -75,19 +75,19 @@ class QETxDetails(QObject, QtEventListener):
     def on_destroy(self):
         self.unregister_callbacks()
 
-    @event_listener
+    @qt_event_listener
     def on_event_verified(self, wallet, txid, info):
         if wallet == self._wallet.wallet and txid == self._txid:
             self._logger.debug(f'verified event for our txid {txid}')
             self.update()
 
-    @event_listener
+    @qt_event_listener
     def on_event_new_transaction(self, wallet, tx):
         if wallet == self._wallet.wallet and tx.txid() == self._txid:
             self._logger.debug(f'new_transaction event for our txid {self._txid}')
             self.update()
 
-    @event_listener
+    @qt_event_listener
     def on_event_removed_transaction(self, wallet, tx):
         if wallet == self._wallet.wallet and tx.txid() == self._txid:
             self._logger.debug(f'removed my transaction {tx.txid()}')
@@ -383,9 +383,11 @@ class QETxDetails(QObject, QtEventListener):
 
         self.detailsChanged.emit()
 
-        if self._label != txinfo.label:
-            self._label = txinfo.label
-            self.labelChanged.emit()
+        if self._txid:
+            label = self._wallet.wallet.get_label_for_txid(self._txid)
+            if self._label != label:
+                self._label = label
+                self.labelChanged.emit()
 
     def update_mined_status(self, tx_mined_info: TxMinedInfo):
         self._mempool_depth = ''
@@ -505,4 +507,5 @@ class QETxDetails(QObject, QtEventListener):
     @pyqtSlot(result='QVariantList')
     def getSerializedTx(self):
         txqr = self._tx.to_qr_data()
-        return [str(self._tx), txqr[0], txqr[1]]
+        label = self._wallet.wallet.get_label_for_txid(self._tx.txid())
+        return [str(self._tx), txqr[0], txqr[1], label]

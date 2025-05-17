@@ -392,7 +392,7 @@ class SwapManager(Logger):
                     if preimage:
                         swap.preimage = preimage
                         self.logger.info(f'found preimage: {preimage.hex()}')
-                        self.lnworker.preimages[swap.payment_hash.hex()] = preimage.hex()
+                        self.lnworker.save_preimage(swap.payment_hash, preimage)
                     else:
                         # this is our refund tx
                         if spent_height > 0:
@@ -430,12 +430,10 @@ class SwapManager(Logger):
                 return
             txin, locktime = self.create_claim_txin(txin=txin, swap=swap)
             # note: there is no csv in the script, we just set this so that txbatcher waits for one confirmation
-            csv = 1 if swap.is_reverse else 0
             name = 'swap claim' if swap.is_reverse else 'swap refund'
-            can_be_batched = bool(csv) if swap.is_reverse else True
+            can_be_batched = True
             sweep_info = SweepInfo(
                 txin=txin,
-                csv_delay=csv,
                 cltv_abs=locktime,
                 txout=None,
                 name=name,
@@ -1128,7 +1126,7 @@ class SwapManager(Logger):
         sig_dummy = b'\x00' * 71  # DER-encoded ECDSA sig, with low S and low R
         witness = [sig_dummy, preimage, witness_script]
         txin.witness_sizehint = len(construct_witness(witness))
-        txin.nsequence = 0xffffffff - 2
+        txin.nsequence = 1 if swap.is_reverse else 0xffffffff - 2
 
     @classmethod
     def create_claim_txin(

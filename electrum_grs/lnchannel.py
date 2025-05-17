@@ -185,7 +185,6 @@ class HTLCWithStatus(NamedTuple):
 class AbstractChannel(Logger, ABC):
     storage: Union['StoredDict', dict]
     config: Dict[HTLCOwner, Union[LocalConfig, RemoteConfig]]
-    _sweep_info: Dict[str, Dict[str, 'SweepInfo']]
     lnworker: Optional['LNWallet']
     channel_id: bytes
     short_channel_id: Optional[ShortChannelID] = None
@@ -193,6 +192,7 @@ class AbstractChannel(Logger, ABC):
     node_id: bytes  # note that it might not be the full 33 bytes; for OCB it is only the prefix
     should_request_force_close: bool = False
     _state: ChannelState
+    _who_closed: Optional[int] = None  # HTLCOwner (1 or -1).  0 means "unknown"
 
     def set_short_channel_id(self, short_id: ShortChannelID) -> None:
         self.short_channel_id = short_id
@@ -303,21 +303,28 @@ class AbstractChannel(Logger, ABC):
     def get_remote_scid_alias(self) -> Optional[bytes]:
         return None
 
-    def sweep_ctx(self, ctx: Transaction) -> Dict[str, SweepInfo]:
-        txid = ctx.txid()
-        if self._sweep_info.get(txid) is None:
-            our_sweep_info = self.create_sweeptxs_for_our_ctx(ctx)
-            their_sweep_info = self.create_sweeptxs_for_their_ctx(ctx)
-            if our_sweep_info:
-                self._sweep_info[txid] = our_sweep_info
+    def get_ctx_sweep_info(self, ctx: Transaction) -> Tuple[bool, Dict[str, SweepInfo]]:
+        our_sweep_info = self.create_sweeptxs_for_our_ctx(ctx)
+        their_sweep_info = self.create_sweeptxs_for_their_ctx(ctx)
+        if our_sweep_info:
+            sweep_info = our_sweep_info
+            who_closed = LOCAL
+        elif their_sweep_info:
+            sweep_info = their_sweep_info
+            who_closed = REMOTE
+        else:
+            sweep_info = {}
+            who_closed = 0
+        if self._who_closed != who_closed:  # mostly here to limit log spam
+            self._who_closed = who_closed
+            if who_closed == LOCAL:
                 self.logger.info(f'we (local) force closed')
-            elif their_sweep_info:
-                self._sweep_info[txid] = their_sweep_info
+            elif who_closed == REMOTE:
                 self.logger.info(f'they (remote) force closed.')
             else:
-                self._sweep_info[txid] = {}
-                self.logger.info(f'not sure who closed.')
-        return self._sweep_info[txid]
+                self.logger.info(f'not sure who closed. maybe co-op close?')
+        is_local_ctx = who_closed == LOCAL
+        return is_local_ctx, sweep_info
 
     def maybe_sweep_htlcs(self, ctx: Transaction, htlc_tx: Transaction) -> Dict[str, SweepInfo]:
         return {}
@@ -567,7 +574,6 @@ class ChannelBackup(AbstractChannel):
         self.name = None
         self.cb = cb
         self.is_imported = isinstance(self.cb, ImportedChannelBackupStorage)
-        self._sweep_info = {}
         self.storage = {} # dummy storage
         self._state = ChannelState.OPENING
         self.node_id = cb.node_id if self.is_imported else cb.node_id_prefix
@@ -780,7 +786,6 @@ class Channel(AbstractChannel):
         # ^ htlc_id -> onion_packet_hex, forwarding_key
         self._state = ChannelState[state['state']]
         self.peer_state = PeerState.DISCONNECTED
-        self._sweep_info = {}
         self._outgoing_channel_update = None  # type: Optional[bytes]
         self.revocation_store = RevocationStore(state["revocation_store"])
         self._can_send_ctx_updates = True  # type: bool
@@ -1083,10 +1088,6 @@ class Channel(AbstractChannel):
             if not self.can_send_update_add_htlc():
                 raise PaymentFailure('Channel cannot add htlc')
 
-        # If proposer is LOCAL we apply stricter checks as that is behaviour we can control.
-        # This should lead to fewer disagreements (i.e. channels failing).
-        strict = (htlc_proposer == LOCAL)
-
         # check htlc raw value
         if not ignore_min_htlc_value:
             if amount_msat <= 0:
@@ -1094,29 +1095,44 @@ class Channel(AbstractChannel):
             if amount_msat < chan_config.htlc_minimum_msat:
                 raise PaymentFailure(f'HTLC value too small: {amount_msat} mgro')
 
+        if self.too_many_htlcs(htlc_proposer):
+            raise PaymentFailure('Too many HTLCs already in channel')
+
+        if amount_msat > self.remaining_max_inflight(htlc_receiver):
+            raise PaymentFailure(
+                f'HTLC value sum (sum of pending htlcs plus new htlc) '
+                f'would exceed max allowed: {chan_config.max_htlc_value_in_flight_msat/1000} sat')
+
         # check proposer can afford htlc
-        max_can_send_msat = self.available_to_spend(htlc_proposer, strict=strict)
+        max_can_send_msat = self.available_to_spend(htlc_proposer)
         if max_can_send_msat < amount_msat:
             raise PaymentFailure(f'Not enough balance. can send: {max_can_send_msat}, tried: {amount_msat}')
 
+    def too_many_htlcs(self, htlc_proposer: HTLCOwner) -> bool:
         # check "max_accepted_htlcs"
+        htlc_receiver = htlc_proposer.inverted()
+        ctn = self.get_next_ctn(htlc_receiver)
+        chan_config = self.config[htlc_receiver]
+        # If proposer is LOCAL we apply stricter checks as that is behaviour we can control.
+        # This should lead to fewer disagreements (i.e. channels failing).
+        strict = (htlc_proposer == LOCAL)
         # this is the loose check BOLT-02 specifies:
         if len(self.hm.htlcs_by_direction(htlc_receiver, direction=RECEIVED, ctn=ctn)) + 1 > chan_config.max_accepted_htlcs:
-            raise PaymentFailure('Too many HTLCs already in channel')
+            return True
         # however, c-lightning is a lot stricter, so extra checks:
         # https://github.com/ElementsProject/lightning/blob/4dcd4ca1556b13b6964a10040ba1d5ef82de4788/channeld/full_channel.c#L581
         if strict:
             max_concurrent_htlcs = min(self.config[htlc_proposer].max_accepted_htlcs,
                                        self.config[htlc_receiver].max_accepted_htlcs)
             if len(self.hm.htlcs(htlc_receiver, ctn=ctn)) + 1 > max_concurrent_htlcs:
-                raise PaymentFailure('Too many HTLCs already in channel')
+                return True
+        return False
 
+    def remaining_max_inflight(self, htlc_receiver: HTLCOwner) -> int:
         # check "max_htlc_value_in_flight_msat"
+        ctn = self.get_next_ctn(htlc_receiver)
         current_htlc_sum = htlcsum(self.hm.htlcs_by_direction(htlc_receiver, direction=RECEIVED, ctn=ctn).values())
-        if current_htlc_sum + amount_msat > chan_config.max_htlc_value_in_flight_msat:
-            raise PaymentFailure(f'HTLC value sum (sum of pending htlcs: {current_htlc_sum/1000} gro '
-                                 f'plus new htlc: {amount_msat/1000} gro) '
-                                 f'would exceed max allowed: {chan_config.max_htlc_value_in_flight_msat/1000} gro')
+        return self.config[htlc_receiver].max_htlc_value_in_flight_msat - current_htlc_sum
 
     def can_pay(self, amount_msat: int, *, check_frozen=False) -> bool:
         """Returns whether we can add an HTLC of given value."""
@@ -1459,7 +1475,7 @@ class Channel(AbstractChannel):
     def has_unsettled_htlcs(self) -> bool:
         return len(self.hm.htlcs(LOCAL)) + len(self.hm.htlcs(REMOTE)) > 0
 
-    def available_to_spend(self, subject: HTLCOwner, *, strict: bool = True) -> int:
+    def available_to_spend(self, subject: HTLCOwner) -> int:
         """The usable balance of 'subject' in msat, after taking reserve and fees (and anchors) into
         consideration. Note that fees (and hence the result) fluctuate even without user interaction.
         """
@@ -1535,6 +1551,11 @@ class Channel(AbstractChannel):
                                 consider_ctx(ctx_owner=sender, is_htlc_dust=False),
                             ),
         )
+
+        max_send_msat = min(max_send_msat, self.remaining_max_inflight(receiver))
+        if self.too_many_htlcs(sender):
+            max_send_msat = 0
+
         max_send_msat = max(max_send_msat, 0)
         return max_send_msat
 

@@ -54,8 +54,10 @@ from electrum_grs.bitcoin import COIN, is_address, DummyAddress
 from electrum_grs.plugin import run_hook
 from electrum_grs.i18n import _
 from electrum_grs.util import (format_time, UserCancelled, profiler, bfh, InvalidPassword,
-                           UserFacingException, get_new_wallet_name, send_exception_to_crash_reporter,
-                           AddTransactionException, os_chmod, UI_UNIT_NAME_TXSIZE_VBYTES, ChoiceItem)
+                           UserFacingException, get_new_wallet_name,
+                           send_exception_to_crash_reporter,
+                           AddTransactionException, os_chmod, UI_UNIT_NAME_TXSIZE_VBYTES,
+                           is_valid_email, ChoiceItem)
 from electrum_grs.bip21 import BITCOIN_BIP21_URI_SCHEME
 from electrum_grs.payment_identifier import PaymentIdentifier
 from electrum_grs.invoices import PR_PAID, Invoice
@@ -274,6 +276,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         # wallet closing warning callbacks
         self.closing_warning_callbacks = []  # type: List[Callable[[], Optional[str]]]
         self.register_closing_warning_callback(self._check_ongoing_submarine_swaps_callback)
+        self.register_closing_warning_callback(self._check_ongoing_force_closures)
         # banner may already be there
         if self.network and self.network.banner:
             self.console.showMessage(self.network.banner)
@@ -1168,7 +1171,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         tx: Transaction,
         *,
         external_keypairs: Mapping[bytes, bytes] = None,
-        payment_identifier: PaymentIdentifier = None,
+        invoice: Invoice = None,
         show_sign_button: bool = True,
         show_broadcast_button: bool = True,
     ):
@@ -1176,7 +1179,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             tx,
             parent=self,
             external_keypairs=external_keypairs,
-            payment_identifier=payment_identifier,
+            invoice=invoice,
             show_sign_button=show_sign_button,
             show_broadcast_button=show_broadcast_button,
         )
@@ -1412,18 +1415,18 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         """
         return self.utxo_list.get_spend_list()
 
-    def broadcast_or_show(self, tx: Transaction, *, payment_identifier: PaymentIdentifier = None):
+    def broadcast_or_show(self, tx: Transaction, *, invoice: 'Invoice' = None):
         if not tx.is_complete():
-            self.show_transaction(tx, payment_identifier=payment_identifier)
+            self.show_transaction(tx, invoice=invoice)
             return
         if not self.network:
             self.show_error(_("You can't broadcast a transaction without a live network connection."))
-            self.show_transaction(tx, payment_identifier=payment_identifier)
+            self.show_transaction(tx, invoice=invoice)
             return
-        self.broadcast_transaction(tx, payment_identifier=payment_identifier)
+        self.broadcast_transaction(tx, invoice=invoice)
 
-    def broadcast_transaction(self, tx: Transaction, *, payment_identifier: PaymentIdentifier = None):
-        self.send_tab.broadcast_transaction(tx, payment_identifier=payment_identifier)
+    def broadcast_transaction(self, tx: Transaction, *, invoice: Invoice = None):
+        self.send_tab.broadcast_transaction(tx, invoice=invoice)
 
     @protected
     def sign_tx(
@@ -1613,11 +1616,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.send_tab.payto_contacts(labels)
 
     def set_contact(self, label, address):
-        if not is_address(address):
+        if not (is_address(address) or is_valid_email(address)):  # email = lightning address
             self.show_error(_('Invalid Address'))
             self.contact_list.update()  # Displays original unchanged value
             return False
-        self.contacts[address] = ('address', label)
+        address_type = 'address' if is_address(address) else 'lnaddress'
+        self.contacts[address] = (address_type, label)
         self.contact_list.update()
         self.history_list.update()
         self.update_completions()
@@ -2007,7 +2011,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         line1.setFixedWidth(32 * char_width_in_lineedit())
         line2 = QLineEdit()
         line2.setFixedWidth(32 * char_width_in_lineedit())
-        grid.addWidget(QLabel(_("Address")), 1, 0)
+        address_label = QLabel(_("Address"))
+        address_label.setToolTip(_("Groestlcoin- or Lightning address"))
+        grid.addWidget(address_label, 1, 0)
         grid.addWidget(line1, 1, 1)
         grid.addWidget(QLabel(_("Name")), 2, 0)
         grid.addWidget(line2, 2, 1)
@@ -2730,23 +2736,46 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.logger.debug(f"registering wallet closing warning callback")
         self.closing_warning_callbacks.append(warning_callback)
 
+    def _check_ongoing_force_closures(self) -> Optional[str]:
+        from electrum.lnutil import MIN_FINAL_CLTV_DELTA_FOR_INVOICE
+        if not self.wallet.has_lightning():
+            return None
+        if not self.network:
+            return None
+        force_closes = self.wallet.lnworker.lnwatcher.get_pending_force_closes()
+        if not force_closes:
+            return
+        # fixme: this is inaccurate, we need local_height - cltv_of_htlc
+        cltv_delta = MIN_FINAL_CLTV_DELTA_FOR_INVOICE
+        msg = '\n\n'.join([
+            _("Pending channel force-close"),
+            messages.MSG_FORCE_CLOSE_WARNING.format(cltv_delta),
+        ])
+        return msg
+
     def _check_ongoing_submarine_swaps_callback(self) -> Optional[str]:
         """Callback that will return a warning string if there are unconfirmed swap funding txs."""
+        from electrum.submarine_swaps import MIN_FINAL_CLTV_DELTA_FOR_CLIENT, LOCKTIME_DELTA_REFUND
         if not (self.wallet.has_lightning() and self.wallet.lnworker.swap_manager):
             return None
         if not self.network:
             return None
-        if ongoing_swaps := self.wallet.lnworker.swap_manager.get_pending_swaps():
-            return "".join((
-                f"{str(len(ongoing_swaps))} ",
-                _("pending submarine swap") if len(ongoing_swaps) == 1 else _("pending submarine swaps"),
-                ":\n",
-                _("Wait until the funding transaction of your swap confirms, otherwise you risk losing your"),
-                " ",
-                _("funds") if any(not swap.is_reverse for swap in ongoing_swaps) else _("mining fee prepayment"),
-                ".",
-            ))
-        return None
+        ongoing_swaps = self.wallet.lnworker.swap_manager.get_pending_swaps()
+        if not ongoing_swaps:
+            return None
+        is_forward = any(not swap.is_reverse for swap in ongoing_swaps)
+        if is_forward:
+            # fixme: this is inaccurate, we need local_height - cltv_of_htlc
+            delta = MIN_FINAL_CLTV_DELTA_FOR_CLIENT
+            warning = messages.MSG_FORWARD_SWAP_WARNING.format(delta)
+        else:
+            locktime = min(swap.locktime for swap in ongoing_swaps)
+            delta = locktime - self.wallet.adb.get_local_height()
+            warning = messages.MSG_REVERSE_SWAP_WARNING.format(delta)
+        return "\n\n".join((
+            _("Pending submarine swap"),
+            warning,
+        ))
 
     def closeEvent(self, event):
         # note that closeEvent is NOT called if the user quits with Ctrl-C

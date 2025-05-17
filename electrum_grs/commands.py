@@ -1412,6 +1412,14 @@ class Commands(Logger):
         """ return wallet synchronization status """
         return wallet.is_up_to_date()
 
+    @command('wn')
+    async def wait_for_sync(self, wallet: Abstract_Wallet = None):
+        """Block until the wallet synchronization finishes."""
+        while True:
+            if wallet.is_up_to_date():
+                return True
+            await wallet.up_to_date_changed_event.wait()
+
     @command('n')
     async def getfeerate(self):
         """
@@ -1631,7 +1639,8 @@ class Commands(Logger):
     @command('wnpl')
     async def close_channel(self, channel_point, force=False, password=None, wallet: Abstract_Wallet = None):
         """
-        Close a lightning channel
+        Close a lightning channel.
+        Returns txid of closing tx.
 
         arg:str:channel_point:channel point
         arg:bool:force:Force closes (broadcast local commitment transaction)
