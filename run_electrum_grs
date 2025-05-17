@@ -284,7 +284,7 @@ def read_config(config_options: dict) -> SimpleConfig:
         if full_config_options.get("cmd") == 'gui':
             gui_name = full_config_options.get(SimpleConfig.GUI_NAME.key(), 'qt')
             try:
-                gui = __import__(f'electrum.gui.{gui_name}', fromlist=['electrum'])
+                gui = __import__(f'electrum_grs.gui.{gui_name}', fromlist=['electrum_grs'])
                 gui.standalone_exception_dialog(config_error)  # type: ignore
             except Exception as e:
                 print_stderr(f"Error showing standalone gui dialog: {e}")
