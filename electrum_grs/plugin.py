@@ -72,8 +72,9 @@ class Plugins(DaemonThread):
 
     LOGGING_SHORTCUT = 'p'
     pkgpath = os.path.dirname(plugins.__file__)
-    keyfile_linux = '/etc/electrum-grs/plugins_key'
-    keyfile_windows = 'C:\\HKEY_LOCAL_MACHINE\\SOFTWARE\\Electrum-GRS\\PluginsKey'
+    # TODO: use XDG Base Directory Specification instead of hardcoding /etc
+    keyfile_posix = '/etc/electrum-grs/plugins_key'
+    keyfile_windows = r'HKEY_LOCAL_MACHINE\SOFTWARE\Electrum-GRS\PluginsKey'
 
     @profiler
     def __init__(self, config: SimpleConfig, gui_name: str = None, cmd_only: bool = False):
@@ -187,17 +188,255 @@ class Plugins(DaemonThread):
     def _has_root_permissions(self, path):
         return os.stat(path).st_uid == 0 and not os.access(path, os.W_OK)
 
-    def get_keyfile_path(self) -> Tuple[str, str]:
+    def get_keyfile_path(self, key_hex: Optional[str]) -> Tuple[str, str]:
         if sys.platform in ['windows', 'win32']:
             keyfile_path = self.keyfile_windows
             keyfile_help = _('This file can be edited with Regdit')
         elif 'ANDROID_DATA' in os.environ:
             raise Exception('platform not supported')
         else:
-            # treat unknown platforms as linux-like
-            keyfile_path = self.keyfile_linux
-            keyfile_help = _('The file must have root permissions')
+            # treat unknown platforms and macOS as linux-like
+            keyfile_path = self.keyfile_posix
+            keyfile_help = "" if not key_hex else "".join([
+                                         _('The file must have root permissions'),
+                                         ".\n\n",
+                                         _("To set it you can also use the Auto-Setup or run "
+                                           "the following terminal command"),
+                                         ":\n\n",
+                                         f"sudo sh -c \"{self._posix_plugin_key_creation_command(key_hex)}\"",
+            ])
         return keyfile_path, keyfile_help
+
+    def try_auto_key_setup(self, pubkey_hex: str) -> bool:
+        """Can be called from the GUI to store the plugin pubkey as root/admin user"""
+        try:
+            if sys.platform in ['windows', 'win32']:
+                self._write_key_to_regedit_windows(pubkey_hex)
+            elif 'ANDROID_DATA' in os.environ:
+                raise Exception('platform not supported')
+            elif sys.platform.startswith('darwin'):  # macOS
+                self._write_key_to_root_file_macos(pubkey_hex)
+            else:
+                self._write_key_to_root_file_linux(pubkey_hex)
+        except Exception:
+            self.logger.exception(f"auto-key setup for {pubkey_hex} failed")
+            return False
+        return True
+
+    def try_auto_key_reset(self) -> bool:
+        try:
+            if sys.platform in ['windows', 'win32']:
+                self._delete_plugin_key_from_windows_registry()
+            elif 'ANDROID_DATA' in os.environ:
+                raise Exception('platform not supported')
+            elif sys.platform.startswith('darwin'):  # macOS
+                self._delete_macos_plugin_keyfile()
+            else:
+                self._delete_linux_plugin_keyfile()
+        except Exception:
+            self.logger.exception(f'auto-reset of plugin key failed')
+            return False
+        return True
+
+    def _posix_plugin_key_creation_command(self, pubkey_hex: str) -> str:
+        """creates the dir (dir_path), writes the key in file, and sets permissions to 644"""
+        dir_path: str = os.path.dirname(self.keyfile_posix)
+        sh_command = (
+                     f"mkdir -p {dir_path} "  # create the /etc/electrum dir
+                     f"&& printf '%s' '{pubkey_hex}' > {self.keyfile_posix} "  # write the key to the file
+                     f"&& chmod 644 {self.keyfile_posix} "  # set read permissions for the file
+                     f"&& chmod 755 {dir_path}"  # set read permissions for the dir
+        )
+        return sh_command
+
+    @staticmethod
+    def _get_macos_osascript_command(commands: List[str]) -> List[str]:
+        """
+        Inspired by
+        https://github.com/barneygale/elevate/blob/01263b690288f022bf6fa702711ac96816bc0e74/elevate/posix.py
+        Wraps the given commands in a macOS osascript command to prompt for root permissions.
+        """
+        from shlex import quote
+
+        def quote_shell(args):
+            return " ".join(quote(arg) for arg in args)
+
+        def quote_applescript(string):
+            charmap = {
+                "\n": "\\n",
+                "\r": "\\r",
+                "\t": "\\t",
+                "\"": "\\\"",
+                "\\": "\\\\",
+            }
+            return '"%s"' % "".join(charmap.get(char, char) for char in string)
+
+        commands = [
+            "osascript",
+            "-e",
+            "do shell script %s "
+            "with administrator privileges "
+            "without altering line endings"
+            % quote_applescript(quote_shell(commands))
+        ]
+        return commands
+
+    @staticmethod
+    def _run_win_regedit_as_admin(reg_exe_command: str) -> None:
+        """
+        Runs reg.exe reg_exe_command and requests admin privileges through UAC prompt.
+        """
+        # has to use ShellExecuteEx as ShellExecuteW (the simpler api) doesn't allow to wait
+        # for the result of the process (returns no process handle)
+        from ctypes import byref, sizeof, windll, Structure, c_ulong
+        from ctypes.wintypes import HANDLE, DWORD, HWND, HINSTANCE, HKEY, LPCWSTR
+
+        # https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfoa
+        class SHELLEXECUTEINFO(Structure):
+            _fields_ = [
+                ('cbSize', DWORD),
+                ('fMask', c_ulong),
+                ('hwnd', HWND),
+                ('lpVerb', LPCWSTR),
+                ('lpFile', LPCWSTR),
+                ('lpParameters', LPCWSTR),
+                ('lpDirectory', LPCWSTR),
+                ('nShow', c_ulong),
+                ('hInstApp', HINSTANCE),
+                ('lpIDList', c_ulong),
+                ('lpClass', LPCWSTR),
+                ('hkeyClass', HKEY),
+                ('dwHotKey', DWORD),
+                ('hIcon', HANDLE),
+                ('hProcess', HANDLE)
+            ]
+
+        info = SHELLEXECUTEINFO()
+        info.cbSize = sizeof(SHELLEXECUTEINFO)
+        info.fMask = 0x00000040 # SEE_MASK_NOCLOSEPROCESS (so we can check the result of the process)
+        info.hwnd = None
+        info.lpVerb = 'runas'  # run as administrator
+        info.lpFile = 'reg.exe'  # the executable to run
+        info.lpParameters = reg_exe_command  # the registry edit command
+        info.lpDirectory = None
+        info.nShow = 1
+
+        # Execute and wait
+        if not windll.shell32.ShellExecuteExW(byref(info)):
+            error = windll.kernel32.GetLastError()
+            raise Exception(f'Error executing registry command: {error}')
+
+        # block until the process is done or 5 sec timeout
+        windll.kernel32.WaitForSingleObject(info.hProcess, 0x1338)
+
+        # Close handle
+        windll.kernel32.CloseHandle(info.hProcess)
+
+    @staticmethod
+    def _execute_commands_in_subprocess(commands: List[str]) -> None:
+        """
+        Executes the given commands in a subprocess and asserts that it was successful.
+        """
+        import subprocess
+        process = subprocess.Popen(
+            commands,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            raise Exception(f'error executing command ({process.returncode}): {stderr}')
+
+    def _write_key_to_root_file_linux(self, key_hex: str) -> None:
+        """
+        Spawns a pkexec subprocess to write the key to a file with root permissions.
+        This will open an OS dialog asking for the root password. Can only succeed if
+        the system has polkit installed.
+        """
+        assert os.path.exists("/etc"), "System does not have /etc directory"
+
+        sh_command: str = self._posix_plugin_key_creation_command(key_hex)
+        commands = ['pkexec', 'sh', '-c', sh_command]
+        self._execute_commands_in_subprocess(commands)
+
+        # check if the key was written correctly
+        with open(self.keyfile_posix, 'r') as f:
+            assert f.read() == key_hex, f'file content mismatch: {f.read()} != {key_hex}'
+        self.logger.debug(f'file saved successfully to {self.keyfile_posix}')
+
+    def _delete_linux_plugin_keyfile(self) -> None:
+        """
+        Deletes the root owned key file at self.keyfile_posix.
+        """
+        if not os.path.exists(self.keyfile_posix):
+            self.logger.debug(f'file {self.keyfile_posix} does not exist')
+            return
+        if not self._has_root_permissions(self.keyfile_posix):
+            os.unlink(self.keyfile_posix)
+            return
+
+        # use pkexec to delete the file as root user
+        commands = ['pkexec', 'rm', self.keyfile_posix]
+        self._execute_commands_in_subprocess(commands)
+        assert not os.path.exists(self.keyfile_posix), f'file {self.keyfile_posix} still exists'
+
+    def _write_key_to_root_file_macos(self, key_hex: str) -> None:
+        assert os.path.exists("/etc"), "System does not have /etc directory"
+
+        sh_command: str = self._posix_plugin_key_creation_command(key_hex)
+        macos_commands = self._get_macos_osascript_command(["sh", "-c", sh_command])
+
+        self._execute_commands_in_subprocess(macos_commands)
+        with open(self.keyfile_posix, 'r') as f:
+            assert f.read() == key_hex, f'file content mismatch: {f.read()} != {key_hex}'
+        self.logger.debug(f'file saved successfully to {self.keyfile_posix}')
+
+    def _delete_macos_plugin_keyfile(self) -> None:
+        if not os.path.exists(self.keyfile_posix):
+            self.logger.debug(f'file {self.keyfile_posix} does not exist')
+            return
+        if not self._has_root_permissions(self.keyfile_posix):
+            os.unlink(self.keyfile_posix)
+            return
+        # use osascript to delete the file as root user
+        macos_commands = self._get_macos_osascript_command(["rm", self.keyfile_posix])
+        self._execute_commands_in_subprocess(macos_commands)
+        assert not os.path.exists(self.keyfile_posix), f'file {self.keyfile_posix} still exists'
+
+    def _write_key_to_regedit_windows(self, key_hex: str) -> None:
+        """
+        Writes the key to the Windows registry with windows UAC prompt.
+        """
+        from winreg import ConnectRegistry, OpenKey, QueryValue, HKEY_LOCAL_MACHINE
+
+        value_type = 'REG_SZ'
+        command = f'add "{self.keyfile_windows}" /ve /t {value_type} /d "{key_hex}" /f'
+
+        self._run_win_regedit_as_admin(command)
+
+        # check if the key was written correctly
+        with ConnectRegistry(None, HKEY_LOCAL_MACHINE) as hkey:
+            with OpenKey(hkey, r'SOFTWARE\Electrum-GRS') as key:
+                assert key_hex == QueryValue(key, 'PluginsKey'), "incorrect registry key value"
+        self.logger.debug(f'key saved successfully to {self.keyfile_windows}')
+
+    def _delete_plugin_key_from_windows_registry(self) -> None:
+        """
+        Deletes the PluginsKey dir in the Windows registry.
+        """
+        from winreg import ConnectRegistry, OpenKey, HKEY_LOCAL_MACHINE
+
+        command = f'delete "{self.keyfile_windows}" /f'
+        self._run_win_regedit_as_admin(command)
+
+        try:
+            # do a sanity check to see if the key has been deleted
+            with ConnectRegistry(None, HKEY_LOCAL_MACHINE) as hkey:
+                with OpenKey(hkey, r'SOFTWARE\Electrum-GRS\PluginsKey'):
+                    raise Exception(f'Key {self.keyfile_windows} still exists, deletion failed')
+        except FileNotFoundError:
+            pass
 
     def create_new_key(self, password:str) -> str:
         salt = os.urandom(32)
@@ -224,14 +463,18 @@ class Plugins(DaemonThread):
             return None, None
         else:
             # treat unknown platforms as linux-like
-            if not os.path.exists(self.keyfile_linux):
+            if not os.path.exists(self.keyfile_posix):
                 return None, None
-            if not self._has_root_permissions(self.keyfile_linux):
+            if not self._has_root_permissions(self.keyfile_posix):
                 return
-            with open(self.keyfile_linux) as f:
+            with open(self.keyfile_posix) as f:
                 key_hex = f.read()
-        key = bytes.fromhex(key_hex)
-        version = key[0]
+        try:
+            key = bytes.fromhex(key_hex)
+            version = key[0]
+        except Exception:
+            self.logger.exception(f'{key_hex=} invalid')
+            return None, None
         if version != PLUGIN_PASSWORD_VERSION:
             self.logger.info(f'unknown plugin password version: {version}')
             return None, None
@@ -344,14 +587,13 @@ class Plugins(DaemonThread):
 
     def maybe_load_plugin_init_method(self, name: str) -> None:
         """Loads the __init__.py module of the plugin if it is not already loaded."""
-        is_external = name in self.external_plugin_metadata
-        base_name = ('electrum_external_plugins.' if is_external else 'electrum_grs.plugins.') + name
+        base_name = ('electrum_external_plugins.' if self.is_external(name) else 'electrum_grs.plugins.') + name
         if base_name not in sys.modules:
             metadata = self.get_metadata(name)
             is_zip = metadata.get('is_zip', False)
             # if the plugin was not enabled on startup the init module hasn't been loaded yet
             if not is_zip:
-                if is_external:
+                if self.is_external(name):
                     # this branch is deprecated: external plugins are always zip files
                     path = os.path.join(metadata['path'], '__init__.py')
                     init_spec = importlib.util.spec_from_file_location(base_name, path)
@@ -369,7 +611,7 @@ class Plugins(DaemonThread):
             return self.plugins[name]
         # if the plugin was not enabled on startup the init module hasn't been loaded yet
         self.maybe_load_plugin_init_method(name)
-        is_external = name in self.external_plugin_metadata
+        is_external = self.is_external(name)
         if is_external and not self.is_authorized(name):
             self.logger.info(f'plugin not authorized {name}')
             return
@@ -399,17 +641,9 @@ class Plugins(DaemonThread):
         secret = pbkdf2_hmac('sha256', pw.encode('utf-8'), salt, iterations=10**5)
         return ECPrivkey(secret)
 
-    def install_internal_plugin(self, name):
-        self.config.set_key(f'plugins.{name}.enabled', [])
-
-    def install_external_plugin(self, name, path, privkey, manifest):
-        # uninstall old version first to get rid of old zip files when updating plugin
-        self.uninstall(name)
-        self.external_plugin_metadata[name] = manifest
-        self.authorize_plugin(name, path, privkey)
-
     def uninstall(self, name: str):
-        self.config.set_key(f'plugins.{name}', None)
+        if self.config.get(f'plugins.{name}'):
+            self.config.set_key(f'plugins.{name}', None)
         if name in self.external_plugin_metadata:
             zipfile = self.zip_plugin_path(name)
             os.unlink(zipfile)
@@ -418,14 +652,16 @@ class Plugins(DaemonThread):
     def is_internal(self, name) -> bool:
         return name in self.internal_plugin_metadata
 
+    def is_external(self, name) -> bool:
+        return name in self.external_plugin_metadata
+
     def is_auto_loaded(self, name):
         metadata = self.external_plugin_metadata.get(name) or self.internal_plugin_metadata.get(name)
         return metadata and (metadata.get('registers_keystore') or metadata.get('registers_wallet_type'))
 
     def is_installed(self, name) -> bool:
         """an external plugin may be installed but not authorized """
-        return (name in self.internal_plugin_metadata and self.config.get(f'plugins.{name}'))\
-            or name in self.external_plugin_metadata
+        return (name in self.internal_plugin_metadata or name in self.external_plugin_metadata)
 
     def is_authorized(self, name) -> bool:
         if name in self.internal_plugin_metadata:
@@ -451,7 +687,8 @@ class Plugins(DaemonThread):
         plugin_hash = get_file_hash256(filename)
         sig = privkey.ecdsa_sign(plugin_hash)
         value = sig.hex()
-        self.config.set_key(f'plugins.{name}.authorized', value, save=True)
+        self.config.set_key(f'plugins.{name}.authorized', value)
+        self.config.set_key(f'plugins.{name}.enabled', True)
 
     def enable(self, name: str) -> 'BasePlugin':
         self.config.enable_plugin(name)
@@ -558,11 +795,13 @@ class Plugins(DaemonThread):
             with zipfile_lib.ZipFile(plugin_filename) as myzip:
                 with myzip.open(os.path.join(dirname, filename)) as myfile:
                     return myfile.read()
-        else:
-            assert name in self.internal_plugin_metadata
+        elif name in self.internal_plugin_metadata:
             path = os.path.join(os.path.dirname(__file__), 'plugins', name, filename)
             with open(path, 'rb') as myfile:
                 return myfile.read()
+        else:
+            # no icon
+            return None
 
 def get_file_hash256(path: str) -> bytes:
     '''Get the sha256 hash of a file, similar to `sha256sum`.'''
@@ -636,6 +875,8 @@ class BasePlugin(Logger):
 
     def is_enabled(self):
         if not self.is_available():
+            return False
+        if not self.parent.is_authorized(self.name):
             return False
         return self.config.is_plugin_enabled(self.name)
 
