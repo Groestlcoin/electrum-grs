@@ -23,7 +23,7 @@ from .qewallet import QEWallet
 from .util import QtEventListener, qt_event_listener
 
 if TYPE_CHECKING:
-    from electrum.submarine_swaps import SwapOffer
+    from electrum_grs.submarine_swaps import SwapOffer
 
 
 class InvalidSwapParameters(Exception): pass

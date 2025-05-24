@@ -616,7 +616,7 @@ class SimpleConfig(Logger):
     NETWORK_AUTO_CONNECT = ConfigVar('auto_connect', default=True, type_=bool)
     NETWORK_ONESERVER = ConfigVar(
         'oneserver', default=False, type_=bool,
-        short_desc=lambda: _('Connect only to a single Electrum Server'),
+        short_desc=lambda: _('Connect only to a single Electrum-GRS Server'),
         long_desc=lambda: _('This is only intended for connecting to your own node. '
                             'Using this option on a public server is a security risk and is discouraged.')
     )
@@ -811,7 +811,7 @@ Warning: setting this to too low will result in lots of payment failures."""),
     )
     BTC_AMOUNTS_ADD_THOUSANDS_SEP = ConfigVar(
         'amt_add_thousands_sep', default=False, type_=bool,
-        short_desc=lambda: _("Add thousand separators to bitcoin amounts"),
+        short_desc=lambda: _("Add thousand separators to groestlcoin amounts"),
     )
 
     BLOCK_EXPLORER = ConfigVar(
