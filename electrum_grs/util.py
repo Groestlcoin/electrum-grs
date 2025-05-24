@@ -60,7 +60,7 @@ import aiohttp
 from aiohttp_socks import ProxyConnector, ProxyType
 import aiorpcx
 import certifi
-import dns.resolver
+import dns.asyncresolver
 
 from .i18n import _
 from .logging import get_logger, Logger
@@ -481,18 +481,29 @@ def profiler(func=None, *, min_threshold: Union[int, float, None] = None):
     """Function decorator that logs execution time.
 
     min_threshold: if set, only log if time taken is higher than threshold
-    NOTE: does not work with async methods.
     """
     if func is None:  # to make "@profiler(...)" work. (in addition to bare "@profiler")
         return partial(profiler, min_threshold=min_threshold)
-    def do_profile(*args, **kw_args):
-        name = func.__qualname__
+    t0 = None  # type: Optional[float]
+    def timer_start():
+        nonlocal t0
         t0 = time.time()
-        o = func(*args, **kw_args)
+    def timer_done():
         t = time.time() - t0
         if min_threshold is None or t > min_threshold:
-            _profiler_logger.debug(f"{name} {t:,.4f} sec")
-        return o
+            _profiler_logger.debug(f"{func.__qualname__} {t:,.4f} sec")
+    if asyncio.iscoroutinefunction(func):
+        async def do_profile(*args, **kw_args):
+            timer_start()
+            o = await func(*args, **kw_args)
+            timer_done()
+            return o
+    else:
+        def do_profile(*args, **kw_args):
+            timer_start()
+            o = func(*args, **kw_args)
+            timer_done()
+            return o
     return do_profile
 
 
@@ -1127,13 +1138,21 @@ def os_chmod(path, mode):
             raise
 
 
-def make_dir(path, allow_symlink=True):
-    """Make directory if it does not yet exist."""
+def make_dir(path, *, allow_symlink=True):
+    """Makes directory if it does not yet exist.
+    Also sets sane 0700 permissions on the dir.
+    """
     if not os.path.exists(path):
         if not allow_symlink and os.path.islink(path):
             raise Exception('Dangling link: ' + path)
-        os.mkdir(path)
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            # this can happen in a multiprocess race, e.g. when an electrum daemon
+            # and an electrum cli command are launched in rapid fire
+            pass
         os_chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        assert os.path.exists(path)
 
 
 def is_subpath(long_path: str, short_path: str) -> bool:
@@ -1819,9 +1838,9 @@ def list_enabled_bits(x: int) -> Sequence[int]:
     return tuple(i for i, b in enumerate(rev_bin) if b == '1')
 
 
-def resolve_dns_srv(host: str):
+async def resolve_dns_srv(host: str):
     # FIXME this method is not using the network proxy. (although the proxy might not support UDP?)
-    srv_records = dns.resolver.resolve(host, 'SRV')
+    srv_records = await dns.asyncresolver.resolve(host, 'SRV')
     # priority: prefer lower
     # weight: tie breaker; prefer higher
     srv_records = sorted(srv_records, key=lambda x: (x.priority, -x.weight))
@@ -2256,9 +2275,10 @@ class OnchainHistoryItem(NamedTuple):
             'group_id': self.group_id,
         }
 
+
 class LightningHistoryItem(NamedTuple):
-    payment_hash: str
-    preimage: str
+    payment_hash: Optional[str]
+    preimage: Optional[str]
     amount_msat: int
     fee_msat: Optional[int]
     type: str

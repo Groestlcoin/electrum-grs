@@ -1,7 +1,8 @@
-from typing import TYPE_CHECKING, Optional, Union, Tuple
+from typing import TYPE_CHECKING, Optional, Union, Tuple, Sequence
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import QLabel, QVBoxLayout, QGridLayout, QPushButton
+from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QHeaderView
 
 from electrum_grs.i18n import _
 from electrum_grs.util import NotEnoughFunds, NoDynamicFeeEstimates, UserCancelled
@@ -20,7 +21,7 @@ from .my_treeview import create_toolbar_with_menu
 
 if TYPE_CHECKING:
     from .main_window import ElectrumWindow
-    from electrum_grs.submarine_swaps import SwapServerTransport
+    from electrum_grs.submarine_swaps import SwapServerTransport, SwapOffer
 
 CANNOT_RECEIVE_WARNING = _(
 """The requested amount is higher than what you can receive in your currently open channels.
@@ -29,6 +30,8 @@ If the swap cannot be performed after 24h, you will be refunded.
 Do you want to continue?"""
 )
 
+
+ROLE_NPUB = Qt.ItemDataRole.UserRole + 1000
 
 class InvalidSwapParameters(Exception): pass
 
@@ -47,8 +50,8 @@ class SwapDialog(WindowModalDialog, QtEventListener):
         vbox = QVBoxLayout(self)
         toolbar, menu = create_toolbar_with_menu(self.config, '')
         menu.addAction(
-            _('Choose swap server'),
-            lambda: self.window.choose_swapserver_dialog(transport),
+            _('Choose swap provider'),
+            lambda: self.choose_swap_server(transport),
         ).setEnabled(not self.config.SWAPSERVER_URL)
         vbox.addLayout(toolbar)
         self.description_label = WWLabel(self.get_description())
@@ -391,3 +394,56 @@ class SwapDialog(WindowModalDialog, QtEventListener):
             toType=onchain_funds if self.is_reverse else lightning_funds,
             capacityType="receiving" if self.is_reverse else "sending",
         )
+
+    def choose_swap_server(self, transport: 'SwapServerTransport') -> None:
+        self.window.choose_swapserver_dialog(transport)  # type: ignore
+        self.update()
+
+
+class SwapServerDialog(WindowModalDialog, QtEventListener):
+
+    def __init__(self, window, servers):
+        WindowModalDialog.__init__(self, window, _('Choose Swap Provider'))
+        self.window = window
+        self.config = window.config
+        msg = '\n'.join([
+            _("Please choose a provider from this list."),
+            _("Note that fees and liquidity may be updated frequently.")
+        ])
+        self.servers_list = QTreeWidget()
+        self.servers_list.setColumnCount(5)
+        self.servers_list.setHeaderLabels([_("Pubkey"), _("Fee"), _('Max Forward'), _('Max Reverse'), _("Last seen")])
+        self.servers_list.header().setStretchLastSection(False)
+        for col_idx in range(5):
+            sm = QHeaderView.ResizeMode.Stretch if col_idx == 0 else QHeaderView.ResizeMode.ResizeToContents
+            self.servers_list.header().setSectionResizeMode(col_idx, sm)
+        self.update_servers_list(servers)
+        vbox = QVBoxLayout()
+        self.setLayout(vbox)
+        vbox.addWidget(WWLabel(msg))
+        vbox.addWidget(self.servers_list)
+        vbox.addStretch()
+        self.ok_button = OkButton(self)
+        vbox.addLayout(Buttons(CancelButton(self), self.ok_button))
+        self.setMinimumWidth(650)
+
+    def run(self):
+        if self.exec() != 1:
+            return None
+        if item := self.servers_list.currentItem():
+            return item.data(0, ROLE_NPUB)
+        return None
+
+    def update_servers_list(self, servers: Sequence['SwapOffer']):
+        self.servers_list.clear()
+        from electrum.util import age
+        items = []
+        for x in servers:
+            last_seen = age(x.timestamp)
+            fee = f"{x.pairs.percentage}% + {x.pairs.mining_fee} sats"
+            max_forward = self.window.format_amount(x.pairs.max_forward) + ' ' + self.window.base_unit()
+            max_reverse = self.window.format_amount(x.pairs.max_reverse) + ' ' + self.window.base_unit()
+            item = QTreeWidgetItem([x.server_pubkey[0:10], fee, max_forward, max_reverse, last_seen])
+            item.setData(0, ROLE_NPUB, x.server_npub)
+            items.append(item)
+        self.servers_list.insertTopLevelItems(0, items)

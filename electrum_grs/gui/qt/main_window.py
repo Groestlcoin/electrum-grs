@@ -106,6 +106,7 @@ from electrum_grs.gui.common_qt.util import TaskThread
 
 if TYPE_CHECKING:
     from . import ElectrumGui
+    from electrum_grs.submarine_swaps import SwapOffer
 
 
 class StatusBarButton(QToolButton):
@@ -1327,27 +1328,14 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                 ]))
             return False
         sm = self.wallet.lnworker.swap_manager
-        def descr(x):
-            last_seen = util.age(x['timestamp'])
-            return (f"pubkey={x['pubkey'][0:10]},  "
-                    f"fee={x['percentage_fee']}% + {x['mining_fee']} sats,  "
-                    f"last_seen: {last_seen}")
-        server_keys = [ChoiceItem(key=x['pubkey'], label=descr(x)) for x in recent_offers]
-        msg = '\n'.join([
-            _("Please choose a server from this list."),
-            _("Note that fees may be updated frequently.")
-        ])
-        choice = self.query_choice(
-            msg=msg,
-            choices=server_keys,
-            title=_("Choose Swap Server"),
-            default_key=self.config.SWAPSERVER_NPUB,
-        )
+        from .swap_dialog import SwapServerDialog
+        d = SwapServerDialog(self, recent_offers)
+        choice = d.run()
         if choice is None:
             return False
         self.config.SWAPSERVER_NPUB = choice
-        pairs = transport.get_offer(choice)
-        sm.update_pairs(pairs)
+        offer = transport.get_offer(choice)
+        sm.update_pairs(offer.pairs)
         return True
 
     @qt_event_listener
@@ -1658,7 +1646,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             grid.addWidget(QLabel(format_time(invoice.exp + invoice.time)), 4, 1)
         if invoice.bip70:
             pr = paymentrequest.PaymentRequest(bytes.fromhex(invoice.bip70))
-            pr.verify()
+            Network.run_from_another_thread(pr.verify())
             grid.addWidget(QLabel(_("Requestor") + ':'), 5, 0)
             grid.addWidget(QLabel(pr.get_requestor()), 5, 1)
             grid.addWidget(QLabel(_("Signature") + ':'), 6, 0)
@@ -1933,19 +1921,19 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
     def change_password_dialog(self):
         from electrum_grs.storage import StorageEncryptionVersion
-        if self.wallet.get_available_storage_encryption_version() == StorageEncryptionVersion.XPUB_PASSWORD:
+        if StorageEncryptionVersion.XPUB_PASSWORD in self.wallet.get_available_storage_encryption_versions():
             from .password_dialog import ChangePasswordDialogForHW
             d = ChangePasswordDialogForHW(self, self.wallet)
-            ok, encrypt_file = d.run()
+            ok, old_password, new_password, encrypt_with_xpub = d.run()
             if not ok:
                 return
-
+            has_xpub_encryption = self.wallet.storage.get_encryption_version() == StorageEncryptionVersion.XPUB_PASSWORD
             def on_password(hw_dev_pw):
-                old_password = hw_dev_pw if self.wallet.has_password() else None
-                new_password = hw_dev_pw if encrypt_file else None
                 self._update_wallet_password(
-                    old_password=old_password, new_password=new_password, encrypt_storage=encrypt_file)
-
+                    old_password = hw_dev_pw if has_xpub_encryption else old_password,
+                    new_password = hw_dev_pw if encrypt_with_xpub else new_password,
+                    xpub_encrypt=encrypt_with_xpub,
+                )
             self.thread.add(
                 self.wallet.keystore.get_password_for_storage_encryption,
                 on_success=on_password)
@@ -1956,12 +1944,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             if not ok:
                 return
             self._update_wallet_password(
-                old_password=old_password, new_password=new_password, encrypt_storage=encrypt_file)
+                old_password=old_password, new_password=new_password)
         self.update_lock_menu()
 
-    def _update_wallet_password(self, *, old_password, new_password, encrypt_storage: bool):
+    def _update_wallet_password(self, *, old_password, new_password, xpub_encrypt=False):
         try:
-            self.wallet.update_password(old_password, new_password, encrypt_storage=encrypt_storage)
+            self.wallet.update_password(old_password, new_password, encrypt_storage=True, xpub_encrypt=xpub_encrypt)
         except InvalidPassword as e:
             self.show_error(str(e))
             return

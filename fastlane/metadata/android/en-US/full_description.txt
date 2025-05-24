@@ -1,16 +1,19 @@
-Electrum Groestlcoin wallet for Android.
+Electrum-GRS is a libre self-custodial Groestlcoin wallet with support of the Lightning Network.
+It's secure, feature rich and trusted by the Groestlcoin community since 2015.
 
-Secure, feature rich and trusted by the Bitcoin community since 2011.
-• Website: https://groestlcoin.org
-• Email: groestlcoin@gmail.com
-• GitHub: https://github.com/groestlcoin/electrum-grs
-• Support: Please use GitHub or email to report bugs rather than the app rating system.
+<b>Features:</b>
+<ul>
+<li><b>Safe:</b> Your private keys are encrypted and never leave your device.</li>
+<li><b>Forgiving:</b> Your wallet can be recovered from a secret phrase.</li>
+<li><b>Instant On:</b> Electrum-GRS uses servers that index the Groestlcoin blockchain making it fast.</li>
+<li><b>No Lock-In:</b> You can export your private keys and use them in other Groestlcoin clients.</li>
+<li><b>No Downtimes:</b> Electrum-GRS servers are decentralized and redundant. Your wallet is never down.</li>
+<li><b>Proof Checking:</b> Electrum-GRS Wallet verifies all the transactions in your history using SPV.</li>
+<li><b>Cold Storage:</b> Keep your private keys offline and go online with a watching-only wallet.</li>
+</ul>
 
-Features:
-• Safe: Your private keys are encrypted and never leave your device.
-• Forgiving: Your wallet can be recovered from a secret phrase.
-• Instant On: Electrum-GRS uses servers that index the Groestlcoin blockchain making it fast.
-• No Lock-In: You can export your private keys and use them in other Groestlcoin clients.
-• No Downtimes: Electrum-GRS servers are decentralized and redundant. Your wallet is never down.
-• Proof Checking: Electrum-GRS Wallet verifies all the transactions in your history using SPV.
-• Cold Storage: Keep your private keys offline and go online with a watching-only wallet.
+<b>Support:</b>
+<ul>
+<li><a href="https://github.com/groestlcoin/electrum-grs">Source code on GitHub</a></li>
+<li>Support: Please use GitHub or email groestlcoin@gmail.com to report bugs rather than the app rating system.</li>
+</ul>

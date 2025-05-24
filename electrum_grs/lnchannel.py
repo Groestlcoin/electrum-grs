@@ -18,13 +18,11 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 import enum
-import os
-from collections import namedtuple, defaultdict
-import binascii
-import json
+from collections import defaultdict
 from enum import IntEnum, Enum
-from typing import (Optional, Dict, List, Tuple, NamedTuple, Set, Callable,
-                    Iterable, Sequence, TYPE_CHECKING, Iterator, Union, Mapping)
+from typing import (
+    Optional, Dict, List, Tuple, NamedTuple,
+    Iterable, Sequence, TYPE_CHECKING, Iterator, Union, Mapping)
 import time
 import threading
 from abc import ABC, abstractmethod
@@ -38,7 +36,6 @@ from electrum_ecc import ECPubkey
 
 from . import constants, util
 from .util import bfh, chunks, TxMinedInfo, error_text_bytes_to_safe_str
-from .invoices import PR_PAID
 from .bitcoin import redeem_script_to_address
 from .crypto import sha256, sha256d
 from .transaction import Transaction, PartialTransaction, TxInput, Sighash
@@ -70,7 +67,7 @@ from .fee_policy import FEERATE_PER_KW_MIN_RELAY_LIGHTNING
 if TYPE_CHECKING:
     from .lnworker import LNWallet
     from .json_db import StoredDict
-    from .lnrouter import RouteEdge
+
 
 # channel flags
 CF_ANNOUNCE_CHANNEL = 0x01
@@ -1057,18 +1054,21 @@ class Channel(AbstractChannel):
     def set_can_send_ctx_updates(self, b: bool) -> None:
         self._can_send_ctx_updates = b
 
-    def can_send_ctx_updates(self) -> bool:
-        """Whether we can send update_fee, update_*_htlc changes to the remote."""
+    def can_update_ctx(self, *, proposer: HTLCOwner) -> bool:
+        """Whether proposer is allowed to send commitment_signed, revoke_and_ack,
+        and update_* messages.
+        """
         if self.get_state() not in (ChannelState.OPEN, ChannelState.SHUTDOWN):
             return False
         if self.peer_state != PeerState.GOOD:
             return False
-        if not self._can_send_ctx_updates:
-            return False
+        if proposer == LOCAL:
+            if not self._can_send_ctx_updates:
+                return False
         return True
 
     def can_send_update_add_htlc(self) -> bool:
-        return self.can_send_ctx_updates() and self.is_open()
+        return self.can_update_ctx(proposer=LOCAL) and self.is_open()
 
     def is_frozen_for_sending(self) -> bool:
         if self.lnworker and self.lnworker.uses_trampoline() and not self.lnworker.is_trampoline_peer(self.node_id):
@@ -1099,10 +1099,10 @@ class Channel(AbstractChannel):
         ctn = self.get_next_ctn(htlc_receiver)
         chan_config = self.config[htlc_receiver]
         if self.get_state() != ChannelState.OPEN:
-            raise PaymentFailure('Channel not open', self.get_state())
+            raise PaymentFailure(f"Channel not open. {self.get_state()!r}")
+        if not self.can_update_ctx(proposer=htlc_proposer):
+            raise PaymentFailure(f"cannot update channel. {self.get_state()!r} {self.peer_state!r}")
         if htlc_proposer == LOCAL:
-            if not self.can_send_ctx_updates():
-                raise PaymentFailure('Channel cannot send ctx updates')
             if not self.can_send_update_add_htlc():
                 raise PaymentFailure('Channel cannot add htlc')
 
@@ -1113,10 +1113,10 @@ class Channel(AbstractChannel):
             if amount_msat < chan_config.htlc_minimum_msat:
                 raise PaymentFailure(f'HTLC value too small: {amount_msat} mgro')
 
-        if self.too_many_htlcs(htlc_proposer):
+        if self.htlc_slots_left(htlc_proposer) == 0:
             raise PaymentFailure('Too many HTLCs already in channel')
 
-        if amount_msat > self.remaining_max_inflight(htlc_receiver):
+        if amount_msat > self.remaining_max_inflight(htlc_receiver, strict=False):
             raise PaymentFailure(
                 f'HTLC value sum (sum of pending htlcs plus new htlc) '
                 f'would exceed max allowed: {chan_config.max_htlc_value_in_flight_msat/1000} sat')
@@ -1126,7 +1126,7 @@ class Channel(AbstractChannel):
         if max_can_send_msat < amount_msat:
             raise PaymentFailure(f'Not enough balance. can send: {max_can_send_msat}, tried: {amount_msat}')
 
-    def too_many_htlcs(self, htlc_proposer: HTLCOwner) -> bool:
+    def htlc_slots_left(self, htlc_proposer: HTLCOwner) -> int:
         # check "max_accepted_htlcs"
         htlc_receiver = htlc_proposer.inverted()
         ctn = self.get_next_ctn(htlc_receiver)
@@ -1134,23 +1134,34 @@ class Channel(AbstractChannel):
         # If proposer is LOCAL we apply stricter checks as that is behaviour we can control.
         # This should lead to fewer disagreements (i.e. channels failing).
         strict = (htlc_proposer == LOCAL)
-        # this is the loose check BOLT-02 specifies:
-        if len(self.hm.htlcs_by_direction(htlc_receiver, direction=RECEIVED, ctn=ctn)) + 1 > chan_config.max_accepted_htlcs:
-            return True
-        # however, c-lightning is a lot stricter, so extra checks:
-        # https://github.com/ElementsProject/lightning/blob/4dcd4ca1556b13b6964a10040ba1d5ef82de4788/channeld/full_channel.c#L581
-        if strict:
-            max_concurrent_htlcs = min(self.config[htlc_proposer].max_accepted_htlcs,
-                                       self.config[htlc_receiver].max_accepted_htlcs)
-            if len(self.hm.htlcs(htlc_receiver, ctn=ctn)) + 1 > max_concurrent_htlcs:
-                return True
-        return False
+        if not strict:
+            # this is the loose check BOLT-02 specifies:
+            return chan_config.max_accepted_htlcs - len(self.hm.htlcs_by_direction(htlc_receiver, direction=RECEIVED, ctn=ctn))
+        else:
+            # however, c-lightning is a lot stricter, so extra checks:
+            # https://github.com/ElementsProject/lightning/blob/4dcd4ca1556b13b6964a10040ba1d5ef82de4788/channeld/full_channel.c#L581
+            max_concurrent_htlcs = min(
+                self.config[htlc_proposer].max_accepted_htlcs,
+                self.config[htlc_receiver].max_accepted_htlcs)
+            return max_concurrent_htlcs - len(self.hm.htlcs(htlc_receiver, ctn=ctn))
 
-    def remaining_max_inflight(self, htlc_receiver: HTLCOwner) -> int:
-        # check "max_htlc_value_in_flight_msat"
+    def remaining_max_inflight(self, htlc_receiver: HTLCOwner, *, strict: bool) -> int:
+        """
+        Checks max_htlc_value_in_flight_msat
+        strict = False -> how much we can accept according to BOLT2
+        strict = True -> how much the remote will accept to send to us (Eclair has stricter rules)
+        """
         ctn = self.get_next_ctn(htlc_receiver)
         current_htlc_sum = htlcsum(self.hm.htlcs_by_direction(htlc_receiver, direction=RECEIVED, ctn=ctn).values())
-        return self.config[htlc_receiver].max_htlc_value_in_flight_msat - current_htlc_sum
+        max_inflight = self.config[htlc_receiver].max_htlc_value_in_flight_msat
+        if strict and htlc_receiver == LOCAL:
+            # in order to send, eclair applies both local and remote max values
+            # https://github.com/ACINQ/eclair/blob/9b0c00a2a28d3ba6c7f3d01fbd2d8704ebbdc75d/eclair-core/src/main/scala/fr/acinq/eclair/channel/Commitments.scala#L503
+            max_inflight = min(
+                self.config[LOCAL].max_htlc_value_in_flight_msat,
+                self.config[REMOTE].max_htlc_value_in_flight_msat
+            )
+        return max_inflight - current_htlc_sum
 
     def can_pay(self, amount_msat: int, *, check_frozen=False) -> bool:
         """Returns whether we can add an HTLC of given value."""
@@ -1168,9 +1179,10 @@ class Channel(AbstractChannel):
         if check_frozen and self.is_frozen_for_receiving():
             return False
         try:
-            self._assert_can_add_htlc(htlc_proposer=REMOTE,
-                                      amount_msat=amount_msat,
-                                      ignore_min_htlc_value=ignore_min_htlc_value)
+            self._assert_can_add_htlc(
+                htlc_proposer=REMOTE,
+                amount_msat=amount_msat,
+                ignore_min_htlc_value=ignore_min_htlc_value)
         except PaymentFailure:
             return False
         return True
@@ -1230,6 +1242,7 @@ class Channel(AbstractChannel):
         # TODO: when more channel types are supported, this method should depend on channel type
         next_remote_ctn = self.get_next_ctn(REMOTE)
         self.logger.info(f"sign_next_commitment. ctn={next_remote_ctn}")
+        assert not self.is_closed(), self.get_state()
 
         pending_remote_commitment = self.get_next_commitment(REMOTE)
         sig_64 = sign_and_get_sig_string(pending_remote_commitment, self.config[LOCAL], self.config[REMOTE])
@@ -1277,6 +1290,7 @@ class Channel(AbstractChannel):
         # TODO: when more channel types are supported, this method should depend on channel type
         next_local_ctn = self.get_next_ctn(LOCAL)
         self.logger.info(f"receive_new_commitment. ctn={next_local_ctn}, len(htlc_sigs)={len(htlc_sigs)}")
+        assert not self.is_closed(), self.get_state()
 
         assert len(htlc_sigs) == 0 or type(htlc_sigs[0]) is bytes
 
@@ -1355,6 +1369,7 @@ class Channel(AbstractChannel):
 
     def revoke_current_commitment(self):
         self.logger.info("revoke_current_commitment")
+        assert not self.is_closed(), self.get_state()
         new_ctn = self.get_latest_ctn(LOCAL)
         new_ctx = self.get_latest_commitment(LOCAL)
         if not self.signature_fits(new_ctx):
@@ -1368,6 +1383,7 @@ class Channel(AbstractChannel):
 
     def receive_revocation(self, revocation: RevokeAndAck):
         self.logger.info("receive_revocation")
+        assert not self.is_closed(), self.get_state()
         new_ctn = self.get_latest_ctn(REMOTE)
         cur_point = self.config[REMOTE].current_per_commitment_point
         derived_point = ecc.ECPrivkey(revocation.per_commitment_secret).get_public_key_bytes(compressed=True)
@@ -1560,18 +1576,18 @@ class Channel(AbstractChannel):
                     return max_send_msat
 
         max_send_msat = min(
-                            max(
-                                consider_ctx(ctx_owner=receiver, is_htlc_dust=True),
-                                consider_ctx(ctx_owner=receiver, is_htlc_dust=False),
-                            ),
-                            max(
-                                consider_ctx(ctx_owner=sender, is_htlc_dust=True),
-                                consider_ctx(ctx_owner=sender, is_htlc_dust=False),
-                            ),
+            max(
+                consider_ctx(ctx_owner=receiver, is_htlc_dust=True),
+                consider_ctx(ctx_owner=receiver, is_htlc_dust=False),
+            ),
+            max(
+                consider_ctx(ctx_owner=sender, is_htlc_dust=True),
+                consider_ctx(ctx_owner=sender, is_htlc_dust=False),
+            ),
         )
 
-        max_send_msat = min(max_send_msat, self.remaining_max_inflight(receiver))
-        if self.too_many_htlcs(sender):
+        max_send_msat = min(max_send_msat, self.remaining_max_inflight(receiver, strict=True))
+        if self.htlc_slots_left(sender) == 0:
             max_send_msat = 0
 
         max_send_msat = max(max_send_msat, 0)
@@ -1680,7 +1696,7 @@ class Channel(AbstractChannel):
         Action must be initiated by LOCAL.
         """
         self.logger.info("settle_htlc")
-        assert self.can_send_ctx_updates(), f"cannot update channel. {self.get_state()!r} {self.peer_state!r}"
+        assert self.can_update_ctx(proposer=LOCAL), f"cannot update channel. {self.get_state()!r} {self.peer_state!r}"
         htlc = self.hm.get_htlc_by_id(REMOTE, htlc_id)
         if htlc.payment_hash != sha256(preimage):
             raise Exception("incorrect preimage for HTLC")
@@ -1697,6 +1713,7 @@ class Channel(AbstractChannel):
         Action must be initiated by REMOTE.
         """
         self.logger.info("receive_htlc_settle")
+        assert self.can_update_ctx(proposer=REMOTE), f"cannot update channel. {self.get_state()!r} {self.peer_state!r}"
         htlc = self.hm.get_htlc_by_id(LOCAL, htlc_id)
         if htlc.payment_hash != sha256(preimage):
             raise RemoteMisbehaving("received incorrect preimage for HTLC")
@@ -1709,7 +1726,7 @@ class Channel(AbstractChannel):
         Action must be initiated by LOCAL.
         """
         self.logger.info("fail_htlc")
-        assert self.can_send_ctx_updates(), f"cannot update channel. {self.get_state()!r} {self.peer_state!r}"
+        assert self.can_update_ctx(proposer=LOCAL), f"cannot update channel. {self.get_state()!r} {self.peer_state!r}"
         with self.db_lock:
             self.hm.send_fail(htlc_id)
 
@@ -1720,6 +1737,7 @@ class Channel(AbstractChannel):
         Action must be initiated by REMOTE.
         """
         self.logger.info("receive_fail_htlc")
+        assert self.can_update_ctx(proposer=REMOTE), f"cannot update channel. {self.get_state()!r} {self.peer_state!r}"
         with self.db_lock:
             self.hm.recv_fail(htlc_id)
         self._receive_fail_reasons[htlc_id] = (error_bytes, reason)
@@ -1753,9 +1771,9 @@ class Channel(AbstractChannel):
         if remainder < 0:
             raise Exception(f"Cannot update_fee. {sender} tried to update fee but they cannot afford it. "
                             f"Their balance would go below reserve: {remainder} msat missing.")
+        assert self.can_update_ctx(proposer=LOCAL if from_us else REMOTE), f"cannot update channel. {self.get_state()!r} {self.peer_state!r}. {from_us=}"
         with self.db_lock:
             if from_us:
-                assert self.can_send_ctx_updates(), f"cannot update channel. {self.get_state()!r} {self.peer_state!r}"
                 self.hm.send_update_fee(feerate)
             else:
                 self.hm.recv_update_fee(feerate)
