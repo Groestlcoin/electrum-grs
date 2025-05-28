@@ -33,9 +33,15 @@ from .logging import get_logger
 _logger = get_logger(__name__)
 LOCALE_DIR = os.path.join(os.path.dirname(__file__), 'locale', 'locale')
 
+
+def _get_null_translations():
+    """Returns a gettext Translations obj with translations explicitly disabled."""
+    return gettext.translation('electrum', fallback=True, class_=gettext.NullTranslations)
+
+
 # Set initial default language to None. i.e. translations explicitly disabled.
 # The main script or GUIs can call set_language to enable translations.
-language = gettext.translation('electrum', fallback=True, class_=gettext.NullTranslations)
+_language = _get_null_translations()
 
 
 # note: do not use old-style (%) formatting inside translations,
@@ -56,29 +62,24 @@ def _(msg: str, *, context=None) -> str:
         else:
             contexts.append(context[:-1])
         for ctx in contexts:
-            dic = [('BTC', 'GRS'), ('Electrum Technologies GmbH', 'Groestlcoin Developers'), ('Electrum', 'Electrum-GRS'), ('Bitcoin', 'Groestlcoin'), ('Bitcoins', 'Groestlcoins'), ('bitcoin', 'groestlcoin'), ('bitcoins', 'groestlcoins'), ('satoshi', 'gro'), ('satoshis', 'gros'), ('غرسلكوين' ,'بتكوين'), ('غرسلكوين' ,'بيتكوين'), ('غرسلكوين' ,'بیت‌کوین'), ('גרוסטלקוין' ,'הביטקוין'), ('비트코인', '그로스톨코인'), ('比特币', '格羅斯币'), ('比特幣', '格羅斯幣'), ('Биткоин', 'Грoстлкоин'), ('Биткойн', 'Грoстлкоин'), ('биткойн', 'Грoстлкоин'), ('ビットコイン', 'グロストルコイン')]
-            for b, m in dic:
-                msg = msg.replace(m, b)
-            t = language.pgettext(ctx, msg)
-            for b, m in dic:
-                t = t.replace(b, m)
-            if t != msg:  # found non-trivial translation
-                return t
+            out = _language.pgettext(ctx, msg)
+            if out != msg:  # found non-trivial translation
+                return out
         # else try without context
-    dic = [('BTC', 'GRS'), ('Electrum Technologies GmbH', 'Groestlcoin Developers'), ('Electrum', 'Electrum-GRS'), ('Bitcoin', 'Groestlcoin'), ('Bitcoins', 'Groestlcoins'), ('bitcoin', 'groestlcoin'), ('bitcoins', 'groestlcoins'), ('satoshi', 'gro'), ('satoshis', 'gros'), ('غرسلكوين' ,'بتكوين'), ('غرسلكوين' ,'بيتكوين'), ('غرسلكوين' ,'بیت‌کوین'), ('גרוסטלקוין' ,'הביטקוין'), ('비트코인', '그로스톨코인'), ('比特币', '格羅斯币'), ('比特幣', '格羅斯幣'), ('Биткоин', 'Грoстлкоин'), ('Биткойн', 'Грoстлкоин'), ('биткойн', 'Грoстлкоин'), ('ビットコイン', 'グロストルコイン')]
-    for b, m in dic:
-        msg = msg.replace(m, b)
-    t = language.gettext(msg)
-    for b, m in dic:
-        t = t.replace(b, m)
-    return t
+    return _language.gettext(msg)
 
 
 def set_language(x: Optional[str]) -> None:
     _logger.info(f"setting language to {x!r}")
-    global language
-    if x:
-        language = gettext.translation('electrum', LOCALE_DIR, fallback=True, languages=[x])
+    global _language
+    if not x:
+        return
+    if x.startswith("en_"):
+        # Setting the language to "English" is a protected special-case:
+        # we disable all translations and use the source strings.
+        _language = _get_null_translations()
+    else:
+        _language = gettext.translation('electrum', LOCALE_DIR, fallback=True, languages=[x])
 
 
 languages = {
@@ -90,7 +91,7 @@ languages = {
     'de_DE': _('German'),
     'el_GR': _('Greek'),
     'eo_UY': _('Esperanto'),
-    'en_UK': _('English'),
+    'en_UK': _('English'),  # selecting this guarantees seeing the untranslated source strings
     'es_ES': _('Spanish'),
     'fa_IR': _('Persian'),
     'fr_FR': _('French'),

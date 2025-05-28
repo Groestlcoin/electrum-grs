@@ -461,7 +461,7 @@ class SwapManager(Logger):
                 can_be_batched=can_be_batched,
             )
             try:
-                self.wallet.txbatcher.add_sweep_input('swaps', sweep_info, self.config.FEE_POLICY_SWAPS)
+                self.wallet.txbatcher.add_sweep_input('swaps', sweep_info)
             except BelowDustLimit:
                 self.logger.info('utxo value below dust threshold')
                 return
@@ -496,7 +496,7 @@ class SwapManager(Logger):
             swap = self.swaps[key]
             if not swap.is_funded():
                 output = self.create_funding_output(swap)
-                self.wallet.txbatcher.add_payment_output('swaps', output, self.config.FEE_POLICY_SWAPS)
+                self.wallet.txbatcher.add_payment_output('swaps', output)
                 swap._payment_pending = True
         else:
             self.logger.info(f'key not in swaps {key}')
@@ -1287,6 +1287,11 @@ class SwapManager(Logger):
         """Returns a list of swaps with unconfirmed funding tx (which require us to stay online)."""
         pending_swaps: List[SwapData] = []
         for swap in self.swaps.values():
+            if swap.is_redeemed:
+                # adb data might have been removed after is_redeemed was set.
+                # in that case lnwatcher will no longer fetch the spending tx
+                # and adb will return TX_HEIGHT_LOCAL
+                continue
             # note: adb.get_tx_height returns TX_HEIGHT_LOCAL if the txid is unknown
             funding_height = self.lnworker.wallet.adb.get_tx_height(swap.funding_txid).height
             spending_height = self.lnworker.wallet.adb.get_tx_height(swap.spending_txid).height

@@ -289,7 +289,7 @@ class AddressSynchronizer(Logger, EventListener):
             # of add_transaction tx, we might learn of more-and-more inputs of
             # being is_mine, as we roll the gap_limit forward
             is_coinbase = tx.inputs()[0].is_coinbase_input()
-            tx_height = self.get_tx_height(tx_hash).height
+            tx_height = self.get_tx_height(tx_hash, force_local_if_missing_tx=False).height
             if not allow_unrelated:
                 # note that during sync, if the transactions are not properly sorted,
                 # it could happen that we think tx is unrelated but actually one of the inputs is is_mine.
@@ -617,6 +617,7 @@ class AddressSynchronizer(Logger, EventListener):
         await self._address_history_changed_events[addr].wait()
 
     def add_unverified_or_unconfirmed_tx(self, tx_hash: str, tx_height: int) -> None:
+        assert tx_height >= TX_HEIGHT_UNCONF_PARENT, f"got {tx_height=} for {tx_hash=}"  # forbid local/future txs here
         with self.lock:
             if self.db.is_in_verified_tx(tx_hash):
                 if tx_height <= 0:
@@ -695,28 +696,43 @@ class AddressSynchronizer(Logger, EventListener):
         if old_height != wanted_height:
             util.trigger_callback('adb_set_future_tx', self, txid)
 
-    def get_tx_height(self, tx_hash: str) -> TxMinedInfo:
+    def get_tx_height(
+        self,
+        tx_hash: str,
+        *,
+        force_local_if_missing_tx: bool = True,
+    ) -> TxMinedInfo:
         if tx_hash is None:  # ugly backwards compat...
             return TxMinedInfo(height=TX_HEIGHT_LOCAL, conf=0)
         with self.lock:
-            verified_tx_mined_info = self.db.get_verified_tx(tx_hash)
-            if verified_tx_mined_info:
+            if verified_tx_mined_info := self.db.get_verified_tx(tx_hash):  # mined and spv-ed
                 conf = max(self.get_local_height() - verified_tx_mined_info.height + 1, 0)
-                return verified_tx_mined_info._replace(conf=conf)
-            elif tx_hash in self.unverified_tx:
+                tx_mined_info = verified_tx_mined_info._replace(conf=conf)
+            elif tx_hash in self.unverified_tx:  # mined, no spv
                 height = self.unverified_tx[tx_hash]
-                return TxMinedInfo(height=height, conf=0)
-            elif tx_hash in self.unconfirmed_tx:
+                tx_mined_info = TxMinedInfo(height=height, conf=0)
+            elif tx_hash in self.unconfirmed_tx: # mempool
                 height = self.unconfirmed_tx[tx_hash]
-                return TxMinedInfo(height=height, conf=0)
-            elif wanted_height := self.future_tx.get(tx_hash):
+                tx_mined_info = TxMinedInfo(height=height, conf=0)
+            elif wanted_height := self.future_tx.get(tx_hash):  # future
                 if wanted_height > self.get_local_height():
-                    return TxMinedInfo(height=TX_HEIGHT_FUTURE, conf=0, wanted_height=wanted_height)
+                    tx_mined_info = TxMinedInfo(height=TX_HEIGHT_FUTURE, conf=0, wanted_height=wanted_height)
                 else:
+                    tx_mined_info = TxMinedInfo(height=TX_HEIGHT_LOCAL, conf=0)
+            else:  # local
+                tx_mined_info = TxMinedInfo(height=TX_HEIGHT_LOCAL, conf=0)
+            if tx_mined_info.height in (TX_HEIGHT_LOCAL, TX_HEIGHT_FUTURE):
+                return tx_mined_info
+            if force_local_if_missing_tx:
+                # It can happen for a txid in any state (unconf/unverified/verified) that we
+                # don't have the raw tx yet, simply due to network timing.
+                # Having only a partial tx is another variant of this.
+                # FIXME in fact even if we have a complete tx saved, the server might have
+                #       a different tx if only the witness differs. We should compare wtxids.
+                tx = self.db.get_transaction(tx_hash)
+                if tx is None or isinstance(tx, PartialTransaction):
                     return TxMinedInfo(height=TX_HEIGHT_LOCAL, conf=0)
-            else:
-                # local transaction
-                return TxMinedInfo(height=TX_HEIGHT_LOCAL, conf=0)
+            return tx_mined_info
 
     def up_to_date_changed(self) -> None:
         # fire triggers

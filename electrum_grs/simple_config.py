@@ -295,7 +295,7 @@ class SimpleConfig(Logger):
                 d = self.user_config
                 for x in keypath[0:-1]:
                     d2 = d.get(x)
-                    if d2 is None:
+                    if not isinstance(d2, dict):
                         d2 = d[x] = {}
                     d = d2
                 d[keypath[-1]] = value
@@ -328,6 +328,8 @@ class SimpleConfig(Logger):
                 path = key.split('.')
                 for key in path[0:-1]:
                     d = d.get(key, {})
+                if not isinstance(d, dict):
+                    d = {}
                 out = d.get(path[-1], default)
         return out
 
@@ -613,12 +615,26 @@ class SimpleConfig(Logger):
         return CVLookupHelper()
 
     # config variables ----->
-    NETWORK_AUTO_CONNECT = ConfigVar('auto_connect', default=True, type_=bool)
+    NETWORK_AUTO_CONNECT = ConfigVar(
+        'auto_connect', default=True, type_=bool,
+        short_desc=lambda: _('Select server automatically'),
+        long_desc=lambda: _("If auto-connect is enabled, Electrum will always use a server that is on the longest blockchain. "
+                            "If it is disabled, you have to choose a server you want to use. Electrum will warn you if your server is lagging."),
+    )
     NETWORK_ONESERVER = ConfigVar(
         'oneserver', default=False, type_=bool,
-        short_desc=lambda: _('Connect only to a single Electrum-GRS Server'),
-        long_desc=lambda: _('This is only intended for connecting to your own node. '
-                            'Using this option on a public server is a security risk and is discouraged.')
+        short_desc=lambda: _('Only connect to one server (full trust)'),
+        long_desc=lambda: _(
+            "This is only intended for connecting to your own fully trusted server. "
+            "Using this option on a public server is a security risk and is discouraged."
+            "\n\n"
+            "By default, Electrum-GRS tries to maintain connections to ~10 servers. "
+            "One of these nodes gets selected to be the history server and will learn the wallet addresses. "
+            "All the other nodes are *only* used for block header notifications. "
+            "\n\n"
+            "Getting block headers from multiple sources is useful to detect lagging servers, chain splits, and forks. "
+            "Chain split detection is security-critical for determining number of confirmations."
+        )
     )
     NETWORK_PROXY = ConfigVar('proxy', default=None, type_=str, convert_getter=lambda v: "none" if v is None else v)
     NETWORK_PROXY_USER = ConfigVar('proxy_user', default=None, type_=str)
@@ -734,9 +750,10 @@ Warning: setting this to too low will result in lots of payment failures."""),
     TEST_SHUTDOWN_FEE_RANGE = ConfigVar('test_shutdown_fee_range', default=None)
     TEST_SHUTDOWN_LEGACY = ConfigVar('test_shutdown_legacy', default=False, type_=bool)
 
-    FEE_POLICY = ConfigVar('fee_policy', default='eta:2', type_=str)  # exposed to GUI
-    FEE_POLICY_LIGHTNING = ConfigVar('fee_policy_lightning', default='eta:2', type_=str)  # for txbatcher (sweeping)
-    FEE_POLICY_SWAPS = ConfigVar('fee_policy_swaps', default='eta:2', type_=str)  # for txbatcher (sweeping and sending if we are a swapserver)
+    # fee_policy is a dict: fee_policy_name -> fee_policy_descriptor
+    FEE_POLICY = ConfigVar('fee_policy.default', default='eta:2', type_=str)  # exposed to GUI
+    FEE_POLICY_LIGHTNING = ConfigVar('fee_policy.lnwatcher', default='eta:2', type_=str)  # for txbatcher (sweeping)
+    FEE_POLICY_SWAPS = ConfigVar('fee_policy.swaps', default='eta:2', type_=str)  # for txbatcher (sweeping and sending if we are a swapserver)
 
     RPC_USERNAME = ConfigVar('rpcuser', default=None, type_=str)
     RPC_PASSWORD = ConfigVar('rpcpassword', default=None, type_=str)

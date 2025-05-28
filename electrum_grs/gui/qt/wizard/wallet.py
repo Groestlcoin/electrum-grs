@@ -17,13 +17,13 @@ from electrum_grs.keystore import bip44_derivation, bip39_to_seed, purpose48_der
 from electrum_grs.plugin import run_hook, HardwarePluginLibraryUnavailable
 from electrum_grs.storage import StorageReadWriteError
 from electrum_grs.util import WalletFileException, get_new_wallet_name, UserFacingException, InvalidPassword
-from electrum_grs.util import is_subpath, ChoiceItem
+from electrum_grs.util import is_subpath, ChoiceItem, multisig_type
 from electrum_grs.wallet import wallet_types
 from .wizard import QEAbstractWizard, WizardComponent
 from electrum_grs.logging import get_logger, Logger
 from electrum_grs import WalletStorage, mnemonic, keystore
 from electrum_grs.wallet_db import WalletDB
-from electrum_grs.wizard import NewWalletWizard
+from electrum_grs.wizard import NewWalletWizard, KeystoreWizard
 
 from electrum_grs.gui.qt.bip39_recovery_dialog import Bip39RecoveryDialog
 from electrum_grs.gui.qt.password_dialog import PasswordLayout, PW_NEW, MSG_ENTER_PASSWORD, PasswordLayoutForHW
@@ -47,6 +47,34 @@ MSG_HW_STORAGE_ENCRYPTION = _("Set wallet file encryption.") + '\n'\
                           + _("Your wallet file does not contain secrets, mostly just metadata. ") \
                           + _("It also contains your master public key that allows watching your addresses.")
 
+
+
+class QEKeystoreWizard(KeystoreWizard, QEAbstractWizard, MessageBoxMixin):
+    _logger = get_logger(__name__)
+
+    def __init__(self, config: 'SimpleConfig', wallet_type: str, app: 'QElectrumApplication', plugins: 'Plugins', *, start_viewstate=None):
+        KeystoreWizard.__init__(self, plugins)
+        QEAbstractWizard.__init__(self, config, app, start_viewstate=start_viewstate)
+        self._wallet_type = wallet_type
+        self.window_title = _('Extend wallet keystore')
+        # attach gui classes to views
+        self.navmap_merge({
+            'keystore_type': {'gui': WCExtendKeystore},
+            'enter_seed': {'gui': WCHaveSeed},
+            'enter_ext': {'gui': WCEnterExt},
+            'choose_hardware_device': {'gui': WCChooseHWDevice},
+            'script_and_derivation': {'gui': WCScriptAndDerivation},
+            'wallet_password': {'gui': WCWalletPassword},
+            'wallet_password_hardware': {'gui': WCWalletPasswordHardware},
+        })
+
+    def is_single_password(self):
+        return True
+
+    def run(self):
+        if self.exec() == QDialog.DialogCode.Rejected:
+            return
+        return self._result
 
 
 class QENewWalletWizard(NewWalletWizard, QEAbstractWizard, MessageBoxMixin):
@@ -265,9 +293,14 @@ class WCWalletName(WalletWizardComponent, Logger):
         self.name_e = QLineEdit()
         hbox.addWidget(self.name_e)
         button = QPushButton(_('Choose...'))
+        button_create_new = QPushButton(_('New'))
         hbox.addWidget(button)
+        hbox.addWidget(button_create_new)
         self.layout().addLayout(hbox)
+        outside_label = WWLabel('')
+        self.layout().addWidget(outside_label)
 
+        self.layout().addSpacing(50)
         msg_label = WWLabel('')
         self.layout().addWidget(msg_label)
         hbox2 = QHBoxLayout()
@@ -278,17 +311,6 @@ class WCWalletName(WalletWizardComponent, Logger):
         hbox2.addWidget(self.pw_e)
         hbox2.addStretch()
         self.layout().addLayout(hbox2)
-
-        self.layout().addSpacing(50)
-        vbox_create_new = QVBoxLayout()
-        vbox_create_new.addWidget(QLabel(_('Alternatively') + ':'), alignment=Qt.AlignmentFlag.AlignLeft)
-        button_create_new = QPushButton(_('Create New Wallet'))
-        button_create_new.setMinimumWidth(120)
-        vbox_create_new.addWidget(button_create_new, alignment=Qt.AlignmentFlag.AlignLeft)
-        widget_create_new = QWidget()
-        widget_create_new.setLayout(vbox_create_new)
-        vbox_create_new.setContentsMargins(0, 0, 0, 0)
-        self.layout().addWidget(widget_create_new)
         self.layout().addStretch(1)
 
         temp_storage = None  # type: Optional[WalletStorage]
@@ -343,8 +365,7 @@ class WCWalletName(WalletWizardComponent, Logger):
                           + _("Press 'Next' to create this wallet, or choose another file.")
                 elif not wallet_from_memory:
                     if temp_storage.is_encrypted_with_user_pw():
-                        msg = _("This file is encrypted with a password.") + '\n' \
-                              + _('Enter your password or choose another file.')
+                        msg = _("This file is encrypted with a password.")
                         user_needs_to_enter_password = True
                     elif temp_storage.is_encrypted_with_hw_device():
                         msg = _("This file is encrypted using a hardware device.") + '\n' \
@@ -358,9 +379,11 @@ class WCWalletName(WalletWizardComponent, Logger):
             if msg is None:
                 msg = _('Cannot read file')
             if filename and os.path.isabs(relative_path(_path)):
-                msg += '\n\n' + _('Note: this wallet file is outside the default wallets folder.')
+                outside_text = _('Note: this wallet file is outside the default wallets folder.')
+            else:
+                outside_text = ''
+            outside_label.setText(outside_text)
             msg_label.setText(msg)
-            widget_create_new.setVisible(bool(temp_storage and temp_storage.file_exists()))
             if user_needs_to_enter_password:
                 pw_label.show()
                 self.pw_e.show()
@@ -416,6 +439,7 @@ class WCWalletType(WalletWizardComponent):
 
 
 class WCKeystoreType(WalletWizardComponent):
+
     def __init__(self, parent, wizard):
         WalletWizardComponent.__init__(self, parent, wizard, title=_('Keystore'))
         message = _('Do you want to create a new seed, or to restore a wallet using an existing seed?')
@@ -425,7 +449,6 @@ class WCKeystoreType(WalletWizardComponent):
             ChoiceItem(key='masterkey', label=_('Use a master key')),
             ChoiceItem(key='hardware', label=_('Use a hardware device')),
         ]
-
         self.choice_w = ChoiceWidget(message=message, choices=choices)
         self.layout().addWidget(self.choice_w)
         self.layout().addStretch(1)
@@ -433,6 +456,32 @@ class WCKeystoreType(WalletWizardComponent):
 
     def apply(self):
         self.wizard_data['keystore_type'] = self.choice_w.selected_key
+
+
+
+class WCExtendKeystore(WalletWizardComponent):
+
+    def __init__(self, parent, wizard):
+        WalletWizardComponent.__init__(self, parent, wizard, title=_('Keystore'))
+        message = _('What type of signing method do you want to add?')
+        choices = [
+            ChoiceItem(key='haveseed', label=_('Enter seed')),
+            ChoiceItem(key='hardware', label=_('Use a hardware device')),
+        ]
+        self.choice_w = ChoiceWidget(message=message, choices=choices)
+        self.layout().addWidget(self.choice_w)
+        self.layout().addStretch(1)
+        self._valid = True
+        self.wizard_data['wallet_type'] = self._wallet_type = wizard._wallet_type
+
+    def apply(self):
+        self.wizard_data['wallet_type'] = self._wallet_type
+        self.wizard_data['keystore_type'] = self.choice_w.selected_key
+        if multisig_type(self._wallet_type):
+            self.wizard_data['wallet_type'] = self._wallet_type = 'multisig'
+            self.wizard_data['multisig_participants'] = 2
+            self.wizard_data['multisig_signatures'] = 2
+            self.wizard_data['multisig_cosigner_data'] = {}
 
 
 class WCCreateSeed(WalletWizardComponent):
