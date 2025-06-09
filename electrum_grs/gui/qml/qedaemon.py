@@ -178,7 +178,7 @@ class QEDaemon(AuthMixin, QObject):
         if path is None:
             self._path = self.daemon.config.get('wallet_path')  # command line -w option
             if self._path is None:
-                self._path = self.daemon.config.GUI_LAST_WALLET
+                self._path = self.daemon.config.CURRENT_WALLET
         else:
             self._path = path
         if self._path is None:
@@ -236,8 +236,6 @@ class QEDaemon(AuthMixin, QObject):
                     self._logger.info(f'use single password: {self._use_single_password}')
                 else:
                     self._logger.info('use single password disabled by config')
-
-                self.daemon.config.save_last_wallet(wallet)
 
                 run_hook('load_wallet', wallet)
 
@@ -385,7 +383,7 @@ class QEDaemon(AuthMixin, QObject):
             return False
         try:
             # This can throw on invalid base64
-            sig = base64.b64decode(str(signature.strip()))
+            sig = base64.b64decode(str(signature.strip()), validate=True)
             verified = verify_usermessage_with_address(address, sig, message)
         except Exception as e:
             verified = False

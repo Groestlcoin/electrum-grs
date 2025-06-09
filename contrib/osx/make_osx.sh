@@ -3,8 +3,8 @@
 set -e
 
 # Parameterize
-PYTHON_VERSION=3.11.9
-PY_VER_MAJOR="3.11"  # as it appears in fs paths
+PYTHON_VERSION=3.12.10
+PY_VER_MAJOR="3.12"  # as it appears in fs paths
 PACKAGE=Electrum-GRS
 GIT_REPO=https://github.com/groestlcoin/electrum-grs
 
@@ -37,7 +37,7 @@ PKG_FILE="python-${PYTHON_VERSION}-macos11.pkg"
 if [ ! -f "$CACHEDIR/$PKG_FILE" ]; then
     curl -o "$CACHEDIR/$PKG_FILE" "https://www.python.org/ftp/python/${PYTHON_VERSION}/$PKG_FILE"
 fi
-echo "b6cfdee2571ca56ee895043ca1e7110fb78a878cee3eb0c21accb2de34d24b55  $CACHEDIR/$PKG_FILE" | shasum -a 256 -c \
+echo "8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4  $CACHEDIR/$PKG_FILE" | shasum -a 256 -c \
     || fail "python pkg checksum mismatched"
 sudo installer -pkg "$CACHEDIR/$PKG_FILE" -target / \
     || fail "failed to install python"
@@ -88,8 +88,8 @@ brew install autoconf automake libtool gettext coreutils pkgconfig
 
 info "Building PyInstaller."
 PYINSTALLER_REPO="https://github.com/pyinstaller/pyinstaller.git"
-PYINSTALLER_COMMIT="d1b6b520a017578a19e1cb9514752a4517755ee0"
-# ^ tag "v5.13.2"
+PYINSTALLER_COMMIT="306d4d92580fea7be7ff2c89ba112cdc6f73fac1"
+# ^ tag "v6.13.0"
 (
     if [ -f "$CACHEDIR/pyinstaller/PyInstaller/bootloader/Darwin-64bit/runw" ]; then
         info "pyinstaller already built, skipping"
@@ -128,6 +128,11 @@ pyinstaller --version
 
 rm -rf ./dist
 
+info "resetting git submodules."
+# note: --force is less critical in other build scripts, but as the mac build is not doing a fresh clone,
+#       it is very useful here for reproducibility
+git submodule update --init --force
+
 info "preparing electrum-locale."
 (
     if ! which msgfmt > /dev/null 2>&1; then
@@ -140,13 +145,13 @@ info "preparing electrum-locale."
 ) || fail "failed generating locale"
 
 
-if [ ! -f "$DLL_TARGET_DIR/libsecp256k1.2.dylib" ]; then
+if ls "$DLL_TARGET_DIR"/libsecp256k1.*.dylib 1> /dev/null 2>&1; then
+    info "libsecp256k1 already built, skipping"
+else
     info "Building libsecp256k1 dylib..."
     "$CONTRIB"/make_libsecp256k1.sh || fail "Could not build libsecp"
-else
-    info "Skipping libsecp256k1 build: reusing already built dylib."
 fi
-#cp -f "$DLL_TARGET_DIR"/libsecp256k1.*.dylib "$PROJECT_ROOT/electrum_grs" || fail "Could not copy libsecp256k1 dylib"
+cp -f "$DLL_TARGET_DIR"/libsecp256k1.*.dylib "$PROJECT_ROOT/electrum_grs" || fail "Could not copy libsecp256k1 dylib"
 
 if [ ! -f "$DLL_TARGET_DIR/libzbar.0.dylib" ]; then
     info "Building ZBar dylib..."
@@ -206,7 +211,7 @@ find . -exec touch -t '200101220000' {} + || true
 VERSION=$(python3 -c "import electrum_grs; print(electrum_grs.version.ELECTRUM_VERSION)")
 
 info "Building binary"
-ELECTRUM_VERSION=$VERSION pyinstaller --noconfirm --clean contrib/osx/osx.spec || fail "Could not build binary"
+ELECTRUM_VERSION=$VERSION pyinstaller --noconfirm --clean contrib/osx/pyinstaller.spec || fail "Could not build binary"
 
 info "Finished building unsigned dist/${PACKAGE}.app. This hash should be reproducible:"
 find "dist/${PACKAGE}.app" -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256

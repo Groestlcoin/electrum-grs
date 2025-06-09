@@ -1382,13 +1382,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
     def on_event_payment_failed(self, wallet, key, reason):
         if wallet != self.wallet:
             return
-        invoice = self.wallet.get_invoice(key)
-        if invoice and invoice.is_lightning() and invoice.get_address():
-            # fixme: we should display this popup only if the user initiated the payment
-            if self.question(_('Payment failed') + '\n\n' + reason + '\n\n'+ 'Fallback to onchain payment?'):
-                self.send_tab.pay_onchain_dialog(invoice.get_outputs())
-        else:
-            self.notify(_('Payment failed') + '\n\n' + reason)
+        description = self.wallet.get_label_for_rhash(key)
+        self.notify(_('Payment failed') + '\n\n' + description + '\n\n' + reason)
 
     def get_coins(self, **kwargs) -> Sequence[PartialTxInput]:
         coins = self.get_manually_selected_coins()
@@ -2159,7 +2154,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             return
         try:
             # This can throw on invalid base64
-            sig = base64.b64decode(str(signature.toPlainText()))
+            sig = base64.b64decode(str(signature.toPlainText()), validate=True)
             verified = bitcoin.verify_usermessage_with_address(address, sig, message)
         except Exception as e:
             verified = False

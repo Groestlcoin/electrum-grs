@@ -4,6 +4,7 @@
 
 from typing import TYPE_CHECKING
 
+from . import util
 from .util import TxMinedInfo, BelowDustLimit
 from .util import EventListener, event_listener, log_exceptions, ignore_exceptions
 from .transaction import Transaction, TxOutpoint
@@ -19,8 +20,6 @@ if TYPE_CHECKING:
 
 
 class LNWatcher(Logger, EventListener):
-
-    LOGGING_SHORTCUT = 'W'
 
     def __init__(self, lnworker: 'LNWallet'):
         self.lnworker = lnworker
@@ -56,15 +55,17 @@ class LNWatcher(Logger, EventListener):
             return
         for address, callback in list(self.callbacks.items()):
             await callback()
+        # send callback to GUI
+        util.trigger_callback('wallet_updated', self.lnworker.wallet)
 
     @event_listener
     async def on_event_blockchain_updated(self, *args):
         await self.trigger_callbacks()
 
     @event_listener
-    async def on_event_wallet_updated(self, wallet):
+    async def on_event_adb_added_tx(self, adb, tx_hash, tx):
         # called if we add local tx
-        if wallet.adb != self.adb:
+        if adb != self.adb:
             return
         await self.trigger_callbacks()
 

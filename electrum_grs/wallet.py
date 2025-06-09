@@ -376,7 +376,6 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     Completion states (watching-only, single account, no seed, etc) are handled inside classes.
     """
 
-    LOGGING_SHORTCUT = 'w'
     max_change_outputs = 3
     gap_limit_for_change = 10
 
@@ -406,7 +405,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         self._default_labels = {}
         self._accounting_addresses = set()  # addresses counted as ours after successful sweep
 
-        self.taskgroup = OldTaskGroup()
+        self.taskgroup = None
 
         # saved fields
         self.use_change            = db.get('use_change', True)
@@ -450,7 +449,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         self.lnworker = None
 
     async def main_loop(self):
-        self.logger.info("starting taskgroup.")
+        self.logger.info(f"starting taskgroup ({hex(id(self.taskgroup))}).")
         try:
             async with self.taskgroup as group:
                 await group.spawn(asyncio.Event().wait)  # run forever (until cancel)
@@ -548,8 +547,10 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     if self.lnworker:
                         await self.lnworker.stop()
                         self.lnworker = None
+                    self.network = None
+                    await self.taskgroup.cancel_remaining()
+                    self.taskgroup = None
                 await self.adb.stop()
-                await self.taskgroup.cancel_remaining()
         finally:  # even if we get cancelled
             if any([ks.is_requesting_to_be_rewritten_to_wallet_file for ks in self.get_keystores()]):
                 self.save_keystore()
@@ -557,7 +558,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             self.save_db()
 
     def is_up_to_date(self) -> bool:
-        if self.taskgroup.joined:  # either stop() was called, or the taskgroup died
+        if self.taskgroup and self.taskgroup.joined:  # either stop() was called, or the taskgroup died
             return False
         return self._up_to_date
 
@@ -586,6 +587,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             self.save_db()
         # fire triggers
         if status_changed or up_to_date:  # suppress False->False transition, as it is spammy
+            if self.lnworker:
+                await self.lnworker.lnwatcher.trigger_callbacks()
             util.trigger_callback('wallet_updated', self)
             util.trigger_callback('status')
             self.up_to_date_changed_event.set()
@@ -634,6 +637,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
 
     def start_network(self, network: 'Network'):
         assert self.network is None, "already started"
+        self.taskgroup = OldTaskGroup()
         self.network = network
         if network:
             asyncio.run_coroutine_threadsafe(self.main_loop(), self.network.asyncio_loop)
@@ -3965,7 +3969,7 @@ class Deterministic_Wallet(Abstract_Wallet):
         if self.storage.is_encrypted_with_hw_device():
             password = keystore.get_password_for_storage_encryption()
             self.update_password(password, None, encrypt_storage=False)
-        new = BIP32_KeyStore({'xpub':keystore.xpub})
+        new = keystore.watching_only_keystore()
         self._update_keystore(new)
 
 
@@ -4007,7 +4011,7 @@ class Standard_Wallet(Simple_Wallet, Deterministic_Wallet):
         self.keystore.add_slip_19_ownership_proofs_to_tx(tx=tx, password=None)
 
     def _update_keystore(self, keystore):
-        assert self.keystore.xpub == keystore.xpub
+        assert self.keystore.get_master_public_key() == keystore.get_master_public_key()
         self.keystore = keystore
         self.save_keystore()
 

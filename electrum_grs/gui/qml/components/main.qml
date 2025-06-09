@@ -500,7 +500,7 @@ ApplicationWindow
                     })
                     dialog.accepted.connect(function() {
                         Config.swapServerNPub = dialog.selectedPubkey
-                        _swaphelper.init_swap_manager()
+                        _swaphelper.setReadyState()
                     })
                     dialog.rejected.connect(function() {
                         _swaphelper.npubSelectionCancelled()
@@ -526,7 +526,7 @@ ApplicationWindow
         }
 
         function continueWithServerConnection() {
-            if (!Config.autoConnectDefined) {
+            if (!Network.autoConnectDefined) {
                 var dialog = serverConnectWizard.createObject(app)
                 // without completed serverConnectWizard we can't start
                 dialog.rejected.connect(function() {

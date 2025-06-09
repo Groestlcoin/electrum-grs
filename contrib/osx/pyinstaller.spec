@@ -4,15 +4,18 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules, coll
 
 import sys, os
 
-PYPKG="electrum_grs"
-MAIN_SCRIPT="run_electrum_grs"
-PROJECT_ROOT = "C:/electrum-grs"
-ICONS_FILE=f"{PROJECT_ROOT}/{PYPKG}/gui/icons/electrum-grs.ico"
+PACKAGE_NAME='Electrum-GRS.app'
+PYPKG='electrum_grs'
+MAIN_SCRIPT='run_electrum_grs'
+PROJECT_ROOT = os.path.abspath(".")
+ICONS_FILE=f"{PROJECT_ROOT}/{PYPKG}/gui/icons/electrum-grs.icns"
 
-cmdline_name = os.environ.get("ELECTRUM_CMDLINE_NAME")
-if not cmdline_name:
-    raise Exception('no name')
 
+VERSION = os.environ.get("ELECTRUM_VERSION")
+if not VERSION:
+    raise Exception('no version')
+
+block_cipher = None
 
 # see https://github.com/pyinstaller/pyinstaller/issues/2005
 hiddenimports = []
@@ -22,9 +25,9 @@ hiddenimports += collect_submodules(f"{PYPKG}.plugins")
 
 binaries = []
 # Workaround for "Retro Look":
-binaries += [b for b in collect_dynamic_libs('PyQt6') if 'qwindowsvista' in b[0]]
+binaries += [b for b in collect_dynamic_libs('PyQt6') if 'macstyle' in b[0]]
 # add libsecp256k1, libusb, etc:
-binaries += [(f"{PROJECT_ROOT}/{PYPKG}/*.dll", '.')]
+binaries += [(f"{PROJECT_ROOT}/{PYPKG}/*.dylib", ".")]
 
 
 datas = [
@@ -44,6 +47,10 @@ datas += collect_data_files('safetlib')
 datas += collect_data_files('btchip')
 datas += collect_data_files('ckcc')
 datas += collect_data_files('bitbox02')
+
+# some deps rely on importlib metadata
+datas += copy_metadata('slip10')  # from trezor->slip10
+
 
 # We don't put these files in to actually include them in the script but to make the Analysis method scan them for imports
 a = Analysis([f"{PROJECT_ROOT}/{MAIN_SCRIPT}",
@@ -71,17 +78,17 @@ for d in a.datas:
 
 # Strip out parts of Qt that we never use. Reduces binary size by tens of MBs. see #4815
 qt_bins2remove=(
-    r'pyqt6\qt6\qml',
-    r'pyqt6\qt6\bin\qt6quick',
-    r'pyqt6\qt6\bin\qt6qml',
-    r'pyqt6\qt6\bin\qt6multimediaquick',
-    r'pyqt6\qt6\bin\qt6pdfquick',
-    r'pyqt6\qt6\bin\qt6positioning',
-    r'pyqt6\qt6\bin\qt6spatialaudio',
-    r'pyqt6\qt6\bin\qt6shadertools',
-    r'pyqt6\qt6\bin\qt6sensors',
-    r'pyqt6\qt6\bin\qt6web',
-    r'pyqt6\qt6\bin\qt6test',
+    'pyqt6/qt6/qml',
+    'pyqt6/qt6/lib/qtqml',
+    'pyqt6/qt6/lib/qtquick',
+    'pyqt6/qt6/lib/qtshadertools',
+    'pyqt6/qt6/lib/qtspatialaudio',
+    'pyqt6/qt6/lib/qtmultimediaquick',
+    'pyqt6/qt6/lib/qtweb',
+    'pyqt6/qt6/lib/qtpositioning',
+    'pyqt6/qt6/lib/qtsensors',
+    'pyqt6/qt6/lib/qtpdfquick',
+    'pyqt6/qt6/lib/qttest',
 )
 print("Removing Qt binaries:", *qt_bins2remove)
 for x in a.binaries.copy():
@@ -91,8 +98,7 @@ for x in a.binaries.copy():
             print('----> Removed x =', x)
 
 qt_data2remove=(
-    r'pyqt6\qt6\translations\qtwebengine_locales',
-    r'pyqt6\qt6\qml',
+    'pyqt6/qt6/qml',
 )
 print("Removing Qt datas:", *qt_data2remove)
 for x in a.datas.copy():
@@ -101,82 +107,39 @@ for x in a.datas.copy():
             a.datas.remove(x)
             print('----> Removed x =', x)
 
-# not reproducible (see #7739):
-print("Removing *.dist-info/ from datas:")
-for x in a.datas.copy():
-    if ".dist-info\\" in x[0].lower():
-        a.datas.remove(x)
-        print('----> Removed x =', x)
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-
-# hotfix for #3171 (pre-Win10 binaries)
-a.binaries = [x for x in a.binaries if not x[1].lower().startswith(r'c:\windows')]
-
-pyz = PYZ(a.pure)
-
-
-#####
-# "standalone" exe with all dependencies packed into it
-
-exe_standalone = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    name=os.path.join("build", "pyi.win32", PYPKG, f"{cmdline_name}.exe"),
-    debug=False,
-    strip=None,
-    upx=False,
-    icon=ICONS_FILE,
-    console=False)
-    # console=True makes an annoying black box pop up, but it does make Electrum-GRS output command line commands, with this turned off no output will be given but commands can still be used
-
-exe_portable = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas + [('is_portable', 'README.md', 'DATA')],
-    name=os.path.join("build", "pyi.win32", PYPKG, f"{cmdline_name}-portable.exe"),
-    debug=False,
-    strip=None,
-    upx=False,
-    icon=ICONS_FILE,
-    console=False)
-
-#####
-# exe and separate files that NSIS uses to build installer "setup" exe
-
-exe_inside_setup_noconsole = EXE(
+exe = EXE(
     pyz,
     a.scripts,
     exclude_binaries=True,
-    name=os.path.join("build", "pyi.win32", PYPKG, f"{cmdline_name}.exe"),
+    name=MAIN_SCRIPT,
     debug=False,
-    strip=None,
-    upx=False,
+    strip=False,
+    upx=True,
     icon=ICONS_FILE,
-    console=False)
+    console=False,
+    target_arch='x86_64',  # TODO investigate building 'universal2'
+)
 
-exe_inside_setup_console = EXE(
-    pyz,
-    a.scripts,
-    exclude_binaries=True,
-    name=os.path.join("build", "pyi.win32", PYPKG, f"{cmdline_name}-debug.exe"),
-    debug=False,
-    strip=None,
-    upx=False,
-    icon=ICONS_FILE,
-    console=True)
-
-coll = COLLECT(
-    exe_inside_setup_noconsole,
-    exe_inside_setup_console,
+app = BUNDLE(
+    exe,
     a.binaries,
     a.zipfiles,
     a.datas,
-    strip=None,
-    upx=True,
-    debug=False,
+    version=VERSION,
+    name=PACKAGE_NAME,
     icon=ICONS_FILE,
-    console=False,
-    name=os.path.join('dist', PYPKG))
+    bundle_identifier=None,
+    info_plist={
+        'NSHighResolutionCapable': 'True',
+        'NSSupportsAutomaticGraphicsSwitching': 'True',
+        'CFBundleURLTypes':
+            [{
+                'CFBundleURLName': 'groestlcoin',
+                'CFBundleURLSchemes': ['groestlcoin', 'lightning', ],
+            }],
+        'LSMinimumSystemVersion': '11',
+        'NSCameraUsageDescription': 'Electrum-GRS would like to access the camera to scan for QR codes',
+    },
+)

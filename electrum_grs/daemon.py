@@ -221,7 +221,7 @@ class AuthenticatedServer(Logger):
         if basic != 'Basic':
             raise AuthenticationInvalidOrMissing('UnsupportedType')
         encoded = to_bytes(encoded, 'utf8')
-        credentials = to_string(b64decode(encoded), 'utf8')
+        credentials = to_string(b64decode(encoded, validate=True), 'utf8')
         username, _, password = credentials.partition(':')
         if not (constant_time_compare(username, self.rpc_user)
                 and constant_time_compare(password, self.rpc_password)):
@@ -342,7 +342,7 @@ class CommandsServer(AuthenticatedServer):
                 if config_options.get(SimpleConfig.NETWORK_OFFLINE.key()) and not self.config.NETWORK_OFFLINE:
                     raise UserFacingException(
                         "error: current GUI is running online, so it cannot open a new wallet offline.")
-                path = config_options.get('wallet_path') or self.config.get_wallet_path(use_gui_last_wallet=True)
+                path = config_options.get('wallet_path') or self.config.get_wallet_path()
                 self.daemon.gui_object.new_window(path, config_options.get('url'))
                 return True
             else:
@@ -363,10 +363,11 @@ class CommandsServer(AuthenticatedServer):
         kwargs = {}
         for x in cmd.options:
             kwargs[x] = config_options.get(x)
-        if 'wallet_path' in cmd.options:
-            kwargs['wallet_path'] = config_options.get('wallet_path')
-        elif 'wallet' in cmd.options:
-            kwargs['wallet'] = config_options.get('wallet_path')
+        if 'wallet_path' in cmd.options or 'wallet' in cmd.options:
+            wallet_path = config_options.get('wallet_path')
+            if len(self.daemon._wallets) > 1 and wallet_path is None:
+                raise UserFacingException("error: wallet not specified")
+            kwargs['wallet_path'] = wallet_path
         func = getattr(self.cmd_runner, cmd.name)
         # execute requested command now.  note: cmd can raise, the caller (self.handle) will wrap it.
         result = await func(*args, **kwargs)
@@ -447,13 +448,21 @@ class Daemon(Logger):
     @staticmethod
     def _wallet_key_from_path(path) -> str:
         """This does stricter path standardization than 'standardize_path'.
-        It is used for keying the _wallets dict, but not for the actual filesystem operations. (see #8495)
+        It is used for keying the _wallets dict,
+        but MUST NOT be used as a *path* for the actual filesystem operations. (see #8495)
         """
         path = standardize_path(path)
-        # also resolve symlinks and windows network mounts/etc:
+        # The extra normalisation makes it even harder to open the same wallet file multiple times simultaneously.
+        # - "realpath" resolves symlinks:
+        #   note: the path returned by realpath has been observed NOT to work for FS operations!
+        #         (e.g. for Cryptomator WinFSP/FUSE mounts, see #8495).
+        #         It is okay for us to use it for computing a canonical wallet *key*, but cannot be used as a path!
         path = os.path.realpath(path)
+        # - "normcase" does Windows-specific case and slash normalisation:
         path = os.path.normcase(path)
-        return str(path)
+        # - prepend header to break usage of wallet keys as fs paths
+        header = "WALLETKEY-"
+        return header + str(path)
 
     def with_wallet_lock(func):
         def func_wrapper(self: 'Daemon', *args, **kwargs):
@@ -477,8 +486,11 @@ class Daemon(Logger):
             coro = wallet.lnworker.lnwatcher.trigger_callbacks(requires_synchronizer=False)
             asyncio.run_coroutine_threadsafe(coro, self.asyncio_loop)
         self.add_wallet(wallet)
+        if self.config.get('wallet_path') is None:
+            self.config.CURRENT_WALLET = path
         self.update_recently_opened_wallets(path)
         return wallet
+
 
     @staticmethod
     @profiler
@@ -536,11 +548,17 @@ class Daemon(Logger):
     @with_wallet_lock
     async def _stop_wallet(self, path: str) -> bool:
         """Returns True iff a wallet was found."""
+        path = standardize_path(path)
         wallet_key = self._wallet_key_from_path(path)
         wallet = self._wallets.pop(wallet_key, None)
         if not wallet:
             return False
         await wallet.stop()
+        if self.config.get('wallet_path') is None:
+            wallet_paths = [w.db.storage.path for w in self._wallets.values()
+                            if w.db.storage and w.db.storage.path]
+            if self.config.CURRENT_WALLET == path and wallet_paths:
+                self.config.CURRENT_WALLET = wallet_paths[0]
         return True
 
     def run_daemon(self):

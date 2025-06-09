@@ -63,7 +63,8 @@ if sys.platform == "linux" and os.environ.get("APPIMAGE"):
 from electrum_grs.i18n import _, set_language
 from electrum_grs.plugin import run_hook
 from electrum_grs.util import (UserCancelled, profiler, send_exception_to_crash_reporter,
-                           WalletFileException, get_new_wallet_name, InvalidPassword)
+                           WalletFileException, get_new_wallet_name, InvalidPassword,
+                           standardize_path)
 from electrum_grs.wallet import Wallet, Abstract_Wallet
 from electrum_grs.wallet_db import WalletRequiresSplit, WalletRequiresUpgrade, WalletUnfinished
 from electrum_grs.logging import Logger
@@ -77,7 +78,8 @@ from electrum_grs import constants
 from electrum_grs.gui.common_qt.i18n import ElectrumTranslator
 from electrum_grs.gui.messages import TERMS_OF_USE_LATEST_VERSION
 
-from .util import read_QIcon, ColorScheme, custom_message_box, MessageBoxMixin, WWLabel
+from .util import (read_QIcon, ColorScheme, custom_message_box, MessageBoxMixin, WWLabel,
+                   set_windows_os_screenshot_protection_drm_flag)
 from .main_window import ElectrumWindow
 from .network_dialog import NetworkDialog
 from .stylesheet_patcher import patch_qt_stylesheet
@@ -101,6 +103,20 @@ class OpenFileEventFilter(QObject):
             if len(self.windows) >= 1:
                 self.windows[0].set_payment_identifier(event.url().toString())
                 return True
+        return False
+
+
+class ScreenshotProtectionEventFilter(QObject):
+    def __init__(self):
+        super().__init__()
+
+    def eventFilter(self, obj, event):
+        if (
+            event.type() == QtCore.QEvent.Type.Show
+            and isinstance(obj, QWidget)
+            and obj.isWindow()
+        ):
+            set_windows_os_screenshot_protection_drm_flag(obj)
         return False
 
 
@@ -135,9 +151,12 @@ class ElectrumGui(BaseElectrumGui, Logger):
         QGuiApplication.setApplicationName("Electrum-GRS")
         self.gui_thread = threading.current_thread()
         self.windows = []  # type: List[ElectrumWindow]
-        self.efilter = OpenFileEventFilter(self.windows)
+        self.open_file_efilter = OpenFileEventFilter(self.windows)
         self.app = QElectrumApplication(sys.argv)
-        self.app.installEventFilter(self.efilter)
+        self.app.installEventFilter(self.open_file_efilter)
+        self.screenshot_protection_efilter = ScreenshotProtectionEventFilter()
+        if sys.platform in ['win32', 'windows'] and self.config.GUI_QT_SCREENSHOT_PROTECTION:
+            self.app.installEventFilter(self.screenshot_protection_efilter)
         self.app.setWindowIcon(read_QIcon("electrum.png"))
         self.translator = ElectrumTranslator()
         self.app.installTranslator(self.translator)
@@ -246,8 +265,11 @@ class ElectrumGui(BaseElectrumGui, Logger):
             return
         self._cleaned_up = True
         self.app.new_window_signal.disconnect()
-        self.app.removeEventFilter(self.efilter)
-        self.efilter = None
+        self.app.removeEventFilter(self.open_file_efilter)
+        self.open_file_efilter = None
+        # it is save to remove the filter, even if it has not been installed
+        self.app.removeEventFilter(self.screenshot_protection_efilter)
+        self.screenshot_protection_efilter = None
         # If there are still some open windows, try to clean them up.
         for window in list(self.windows):
             window.close()
@@ -343,6 +365,10 @@ class ElectrumGui(BaseElectrumGui, Logger):
         Warning: the returned window might be for a completely different wallet
                  than the provided path, as we allow user interaction to change the path.
         """
+        if not self.has_accepted_terms_of_use():
+            self.logger.warning(f"terms of use not accepted, rejecting to start new window")
+            return None
+
         wallet = None
         # Try to open with daemon first. If this succeeds, there won't be a wizard at all
         # (the wallet main window will appear directly).
@@ -428,7 +454,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
         d = wizard.get_wizard_data()
 
         if d['wallet_is_open']:
-            wallet_path = self.daemon._wallet_key_from_path(d['wallet_name'])
+            wallet_path = standardize_path(d['wallet_name'])
             for window in self.windows:
                 if window.wallet.storage.path == wallet_path:
                     return window.wallet
@@ -488,9 +514,6 @@ class ElectrumGui(BaseElectrumGui, Logger):
         if window in self.windows:
             self.windows.remove(window)
         self.build_tray_menu()
-        # save wallet path of last open window
-        if not self.windows:
-            self.config.save_last_wallet(window.wallet)
         run_hook('on_close_window', window)
         if window.should_stop_wallet_on_close:
             self.daemon.stop_wallet(window.wallet.storage.path)
@@ -508,12 +531,17 @@ class ElectrumGui(BaseElectrumGui, Logger):
         for window in list(self.windows):
             self.reload_window(window)
 
+    def has_accepted_terms_of_use(self) -> bool:
+        if self.config.TERMS_OF_USE_ACCEPTED >= TERMS_OF_USE_LATEST_VERSION\
+                or constants.net.NET_NAME == "regtest":
+            return True
+        return False
+
     def ask_terms_of_use(self):
         """Ask the user to accept the terms of use.
         This is only shown if the user has not accepted them yet.
         """
-        if self.config.TERMS_OF_USE_ACCEPTED >= TERMS_OF_USE_LATEST_VERSION\
-                or constants.net.NET_NAME == "regtest":
+        if self.has_accepted_terms_of_use():
             return
         from electrum.gui.qt.wizard.terms_of_use import QETermsOfUseWizard
         dialog = QETermsOfUseWizard(self.config, self.app)
@@ -555,7 +583,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
             return
         # start wizard to select/create wallet
         self.timer.start()
-        path = self.config.get_wallet_path(use_gui_last_wallet=True)
+        path = self.config.get_wallet_path()
         try:
             if not self.start_new_window(path, self.config.get('url'), app_is_starting=True):
                 return

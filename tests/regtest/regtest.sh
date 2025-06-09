@@ -112,7 +112,7 @@ if [[ $1 == "init" ]]; then
     $agent setconfig --offline test_force_disable_mpp True
     echo "funding $2"
     # note: changing the funding amount affects all tests, as they rely on "wait_for_balance"
-    $groestlcoin_cli sendtoaddress $($agent getunusedaddress -o) 1
+    $groestlcoin_cli sendtoaddress $($agent getunusedaddress -o -w "/tmp/$2/regtest/wallets/default_wallet") 1
 fi
 
 if [[ $1 == "setconfig" ]]; then
@@ -424,7 +424,7 @@ if [[ $1 == "redeem_received_htlcs" ]]; then
     $bob close_channel $chan_id --force
     # if we exit here, bob GUI will show a warning
     new_blocks 1
-    wait_for_balance bob 1.039
+    wait_for_balance bob 1.038
 fi
 
 
@@ -578,11 +578,17 @@ if [[ $1 == "fw_fail_htlc" ]]; then
         exit 1
     fi
     $carol stop
-    $bob close_channel $chan_id2 --force
+    ctx_id=$($bob close_channel $chan_id2 --force)
     new_blocks 1
     sleep 1
     new_blocks 150 # cltv before bob can broadcast
-    sleep 5        # give bob time to process blocks and broadcast
+    # index of htlc
+    if [ $TEST_ANCHOR_CHANNELS = True ] ; then
+        output_index=2
+    else
+        output_index=0
+    fi
+    wait_until_spent $ctx_id $output_index
     new_blocks 1   # confirm 2nd stage.
     sleep 1
     new_blocks 100 # deep

@@ -2,11 +2,12 @@ import json
 import threading
 import os
 import stat
-from typing import Union, Optional, Dict, Sequence, Any, Set, Callable, AbstractSet
+from typing import Union, Optional, Dict, Sequence, Any, Set, Callable, AbstractSet, Type
 from functools import cached_property
 
 from copy import deepcopy
 
+from . import constants
 from . import util
 from . import invoices
 from .util import base_units, base_unit_name_to_decimal_point, decimal_point_to_base_unit_name, UnknownBaseUnit, DECIMAL_POINT_DEFAULT
@@ -232,25 +233,23 @@ class SimpleConfig(Logger):
         make_dir(path, allow_symlink=False)
         return path
 
+    def get_selected_chain(self) -> Type[constants.AbstractNet]:
+        selected_chains = [
+            chain for chain in constants.NETS_LIST
+            if self.get(chain.config_key())]
+        if selected_chains:
+            # note: if multiple are selected, we just pick one deterministically random
+            return selected_chains[0]
+        return constants.BitcoinMainnet
+
     def electrum_path(self):
         path = self.electrum_path_root()
-        if self.get('testnet'):
-            path = os.path.join(path, 'testnet')
-            make_dir(path, allow_symlink=False)
-        elif self.get('testnet4'):
-            path = os.path.join(path, 'testnet4')
-            make_dir(path, allow_symlink=False)
-        elif self.get('regtest'):
-            path = os.path.join(path, 'regtest')
-            make_dir(path, allow_symlink=False)
-        elif self.get('simnet'):
-            path = os.path.join(path, 'simnet')
-            make_dir(path, allow_symlink=False)
-        elif self.get('signet'):
-            path = os.path.join(path, 'signet')
+        chain = self.get_selected_chain()
+        if subdir := chain.datadir_subdir():
+            path = os.path.join(path, subdir)
             make_dir(path, allow_symlink=False)
 
-        self.logger.info(f"electrum-grs directory {path}")
+        self.logger.info(f"electrum-grs directory {path} (chain={chain.NET_NAME})")
         return path
 
     def rename_config_keys(self, config, keypairs, deprecation_warning=False):
@@ -459,27 +458,25 @@ class SimpleConfig(Logger):
         else:
             return self.WALLET_BACKUP_DIRECTORY
 
-    def get_wallet_path(self, *, use_gui_last_wallet=False):
-        """Set the path of the wallet."""
+    def maybe_complete_wallet_path(self, path: Optional[str]) -> str:
+        return self._complete_wallet_path(path) if path is not None else self.get_wallet_path()
 
+    def _complete_wallet_path(self, path: str) -> str:
+        """ add user wallets directory if needed """
+        if os.path.split(path)[0] == '':
+            path = os.path.join(self.get_datadir_wallet_path(), path)
+        return path
+
+    def get_wallet_path(self) -> str:
+        """Returns the wallet path."""
         # command line -w option
-        if self.get('wallet_path'):
-            return os.path.join(self.get('cwd', ''), self.get('wallet_path'))
-
-        if use_gui_last_wallet:
-            path = self.GUI_LAST_WALLET
-            if path and os.path.exists(path):
-                return path
-
-        new_path = self.get_fallback_wallet_path()
-
-        # TODO: this can be removed by now
-        # default path in pre 1.9 versions
-        old_path = os.path.join(self.path, "electrum.dat")
-        if os.path.exists(old_path) and not os.path.exists(new_path):
-            os.rename(old_path, new_path)
-
-        return new_path
+        if path:= self.get('wallet_path'):
+            return self._complete_wallet_path(path)
+        # current wallet
+        path = self.CURRENT_WALLET
+        if path and os.path.exists(path):
+            return path
+        return self.get_fallback_wallet_path()
 
     def get_datadir_wallet_path(self):
         util.assert_datadir_available(self.path)
@@ -496,11 +493,6 @@ class SimpleConfig(Logger):
 
     def get_session_timeout(self):
         return self.HWD_SESSION_TIMEOUT
-
-    def save_last_wallet(self, wallet):
-        if self.get('wallet_path') is None:
-            path = wallet.storage.path
-            self.GUI_LAST_WALLET = path
 
     def get_video_device(self):
         device = self.VIDEO_DEVICE_PATH
@@ -763,7 +755,7 @@ Warning: setting this to too low will result in lots of payment failures."""),
     RPC_SOCKET_FILEPATH = ConfigVar('rpcsockpath', default=None, type_=str)
 
     GUI_NAME = ConfigVar('gui', default='qt', type_=str)
-    GUI_LAST_WALLET = ConfigVar('gui_last_wallet', default=None, type_=str)
+    CURRENT_WALLET = ConfigVar('current_wallet', default=None, type_=str)
 
     GUI_QT_COLOR_THEME = ConfigVar(
         'qt_gui_color_theme', default='default', type_=str,
@@ -808,6 +800,14 @@ Warning: setting this to too low will result in lots of payment failures."""),
     GUI_QT_SHOW_TAB_CONTACTS = ConfigVar('show_contacts_tab', default=False, type_=bool)
     GUI_QT_SHOW_TAB_CONSOLE = ConfigVar('show_console_tab', default=False, type_=bool)
     GUI_QT_SHOW_TAB_NOTES = ConfigVar('show_notes_tab', default=False, type_=bool)
+    GUI_QT_SCREENSHOT_PROTECTION = ConfigVar(
+        'screenshot_protection', default=True, type_=bool,
+        short_desc=lambda: _("Prevent screenshots"),
+        # currently this option is Windows only, so the description can be specific to Windows
+        long_desc=lambda: _(
+            'Signals Windows to disallow recordings and screenshots of the application window. '
+            'There is no guarantee Windows will respect this signal.'),
+    )
 
     GUI_QML_PREFERRED_REQUEST_TYPE = ConfigVar('preferred_request_type', default='bolt11', type_=str)
     GUI_QML_USER_KNOWS_PRESS_AND_HOLD = ConfigVar('user_knows_press_and_hold', default=False, type_=bool)

@@ -20,15 +20,21 @@ To prevent fund losses, please save this backup on another device.
 It may be imported in another Electrum wallet with the same seed."""
 )
 
-MSG_LIGHTNING_EXPERIMENTAL_WARNING = _(
-"""Lightning support in Electrum is experimental. Do not put large amounts in lightning channels."""
-)
-
-MSG_LIGHTNING_SCB_WARNING = _(
+MSG_LIGHTNING_WARNING = _(
 """Electrum uses static channel backups. If you lose your wallet file, you will need to request your channel to be force-closed by the remote peer in order to recover your funds. This assumes that the remote peer is reachable, and has not lost its own data."""
 )
 
-MSG_LIGHTNING_WARNING = MSG_LIGHTNING_EXPERIMENTAL_WARNING + "\n\n" + MSG_LIGHTNING_SCB_WARNING
+MSG_THIRD_PARTY_PLUGIN_WARNING = ' '.join([
+    '<b>' + _('Warning: Third-party plugins have access to your wallet!') + '</b>',
+    '<br/><br/>',
+    _('Installing this plugin will grant third-party software access to your wallet. You must trust the plugin not to be malicious.'),
+    _('You should at minimum check who the author of the plugin is, and be careful of imposters.'),
+    '<br/><br/>',
+    _('Third-party plugins are not endorsed by Electrum.'),
+    _('Electrum will not be responsible in case of theft, loss of funds or privacy that might result from third-party plugins.'),
+    '<br/><br/>',
+    _('To install this plugin, please enter your plugin authorization password') + ':'
+])
 
 MSG_CONFLICTING_BACKUP_INSTANCE = _(
 """Another instance of this wallet (same seed) has an open channel with the same remote node. If you create this channel, you will not be able to use both wallets at the same time.
@@ -103,3 +109,35 @@ MSG_TERMS_OF_USE = (
 3. We do not provide private user support. All issue resolutions are public, and take place on Github or public forums. If someone posing as 'Electrum-GRS support' proposes to help you via a private channel, this person is most likely an imposter trying to steal your groestlcoins."""
 )
 TERMS_OF_USE_LATEST_VERSION : int = 1  # bump this if we want users re-prompted due to changes
+
+
+MSG_CONNECTMODE_AUTOCONNECT = _('Auto-connect')
+MSG_CONNECTMODE_MANUAL = _('Manual server selection')
+MSG_CONNECTMODE_ONESERVER = _('Connect only to a single server')
+
+MSG_CONNECTMODE_SERVER_HELP = _(
+    "Electrum-GRS connects to a unique server in order to receive your transaction history. "
+    "This server will learn your wallet adddresses."
+)
+MSG_CONNECTMODE_NODES_HELP = _(
+    "In addition to your history server, Electrum-GRS will try to maintain connections with ~10 extra servers, in order to download block headers and find out the longest blockchain. "
+    "These servers are only used for block header notifications and fee estimates; they do not learn your wallet addresses. "
+    "Getting block headers from multiple sources is useful to detect lagging servers and forks. "
+    "Fork detection is security-critical for determining number of confirmations."
+)
+
+MSG_CONNECTMODE_AUTOCONNECT_HELP = _(
+    "Electrum-GRS will always use a history server that is on the longest blockchain. "
+    "If your current server is unresponsive or lagging, Electrum will switch to another server."
+)
+
+MSG_CONNECTMODE_MANUAL_HELP = _(
+    "Electrum-GRS will stay with the server you selected. It will warn you if your server is lagging."
+)
+
+MSG_CONNECTMODE_ONESERVER_HELP = _(
+    "Electrum-GRS will stay with the server you selected, and it will not connect to additional nodes. "
+    "This will disable fork detection. "
+    "This mode is only intended for connecting to your own fully trusted server. "
+    "Using this option on a public server is a security risk and is discouraged."
+)

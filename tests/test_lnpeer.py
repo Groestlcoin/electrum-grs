@@ -124,6 +124,9 @@ class MockWallet:
     receive_requests = {}
     adb = MockADB()
 
+    def get_invoice(self, key):
+        pass
+
     def get_request(self, key):
         pass
 
@@ -332,6 +335,7 @@ class MockLNWallet(Logger, EventListener, NetworkRetryManager[LNPeerAddr]):
     update_mpp_with_received_htlc = LNWallet.update_mpp_with_received_htlc
     set_mpp_resolution = LNWallet.set_mpp_resolution
     is_mpp_amount_reached = LNWallet.is_mpp_amount_reached
+    get_mpp_amounts = LNWallet.get_mpp_amounts
     get_first_timestamp_of_mpp = LNWallet.get_first_timestamp_of_mpp
     bundle_payments = LNWallet.bundle_payments
     get_payment_bundle = LNWallet.get_payment_bundle

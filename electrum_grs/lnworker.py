@@ -533,7 +533,6 @@ class LNGossip(LNWorker):
     independently of the active LNWallets. LNGossip keeps a curated batch of gossip in _forwarding_gossip
     that is fetched by the LNWallets for regular forwarding."""
     max_age = 14*24*3600
-    LOGGING_SHORTCUT = 'g'
 
     def __init__(self, config: 'SimpleConfig'):
         seed = os.urandom(32)
@@ -1101,6 +1100,7 @@ class LNWallet(LNWorker):
                 direction=direction,
             )
             out[payment_hash.hex()] = item
+        now = int(time.time())
         for chan in itertools.chain(self.channels.values(), self.channel_backups.values()):  # type: AbstractChannel
             item = chan.get_funding_height()
             if item is None:
@@ -1113,7 +1113,7 @@ class LNWallet(LNWorker):
                 type='channel_opening',
                 label=label,
                 group_id=funding_txid,
-                timestamp=funding_timestamp,
+                timestamp=funding_timestamp or now,
                 amount_msat=chan.balance(LOCAL, ctn=0),
                 fee_msat=None,
                 payment_hash=None,
@@ -1132,7 +1132,7 @@ class LNWallet(LNWorker):
                 type='channel_closing',
                 label=label,
                 group_id=closing_txid,
-                timestamp=closing_timestamp,
+                timestamp=closing_timestamp or now,
                 amount_msat=-chan.balance(LOCAL),
                 fee_msat=None,
                 payment_hash=None,
@@ -2322,9 +2322,11 @@ class LNWallet(LNWorker):
             if key in self.payment_info:
                 amount_msat, direction, status = self.payment_info[key]
                 return PaymentInfo(payment_hash, amount_msat, direction, status)
+            return None
 
-    def add_payment_info_for_hold_invoice(self, payment_hash: bytes, lightning_amount_sat: int):
-        info = PaymentInfo(payment_hash, lightning_amount_sat * 1000, RECEIVED, PR_UNPAID)
+    def add_payment_info_for_hold_invoice(self, payment_hash: bytes, lightning_amount_sat: Optional[int]):
+        amount = lightning_amount_sat * 1000 if lightning_amount_sat else None
+        info = PaymentInfo(payment_hash, amount, RECEIVED, PR_UNPAID)
         self.save_payment_info(info, write_to_disk=False)
 
     def register_hold_invoice(self, payment_hash: bytes, cb: Callable[[bytes], Awaitable[None]]):
@@ -2417,16 +2419,33 @@ class LNWallet(LNWorker):
         self.received_mpp_htlcs[payment_key.hex()] = mpp_status._replace(resolution=resolution)
 
     def is_mpp_amount_reached(self, payment_key: bytes) -> bool:
-        mpp_status = self.received_mpp_htlcs.get(payment_key.hex())
-        if not mpp_status:
+        amounts = self.get_mpp_amounts(payment_key)
+        if amounts is None:
             return False
-        total = sum([_htlc.amount_msat for scid, _htlc in mpp_status.htlc_set])
-        return total >= mpp_status.expected_msat
+        total, expected = amounts
+        return total >= expected
 
     def is_accepted_mpp(self, payment_hash: bytes) -> bool:
         payment_key = self._get_payment_key(payment_hash)
         status = self.received_mpp_htlcs.get(payment_key.hex())
         return status and status.resolution == RecvMPPResolution.ACCEPTED
+
+    def get_payment_mpp_amount_msat(self, payment_hash: bytes) -> Optional[int]:
+        """Returns the received mpp amount for given payment hash."""
+        payment_key = self._get_payment_key(payment_hash)
+        amounts = self.get_mpp_amounts(payment_key)
+        if not amounts:
+            return None
+        total_msat, _ = amounts
+        return total_msat
+
+    def get_mpp_amounts(self, payment_key: bytes) -> Optional[Tuple[int, int]]:
+        """Returns (total received amount, expected amount) or None."""
+        mpp_status = self.received_mpp_htlcs.get(payment_key.hex())
+        if not mpp_status:
+            return None
+        total = sum([_htlc.amount_msat for scid, _htlc in mpp_status.htlc_set])
+        return total, mpp_status.expected_msat
 
     def get_first_timestamp_of_mpp(self, payment_key: bytes) -> int:
         mpp_status = self.received_mpp_htlcs.get(payment_key.hex())
@@ -2624,7 +2643,8 @@ class LNWallet(LNWorker):
             else:
                 self.logger.info(f"received unknown htlc_failed, probably from previous session (phash={payment_hash.hex()})")
                 key = payment_hash.hex()
-                if self.get_payment_status(payment_hash) != PR_UNPAID:
+                invoice = self.wallet.get_invoice(key)
+                if invoice and self.get_invoice_status(invoice) != PR_UNPAID:
                     self.set_invoice_status(key, PR_UNPAID)
                     util.trigger_callback('payment_failed', self.wallet, key, '')
 

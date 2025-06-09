@@ -378,8 +378,6 @@ class DebugMem(ThreadJob):
 class DaemonThread(threading.Thread, Logger):
     """ daemon thread that terminates cleanly """
 
-    LOGGING_SHORTCUT = 'd'
-
     def __init__(self):
         threading.Thread.__init__(self)
         Logger.__init__(self)
@@ -1866,6 +1864,10 @@ def randrange(bound: int) -> int:
 class CallbackManager(Logger):
     # callbacks set by the GUI or any thread
     # guarantee: the callbacks will always get triggered from the asyncio thread.
+
+    # FIXME: There should be a way to prevent circular callbacks.
+    # At the very least, we need a distinction between callbacks that
+    # are for the GUI and callbacks between wallet components
 
     def __init__(self):
         Logger.__init__(self)

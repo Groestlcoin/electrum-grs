@@ -424,7 +424,7 @@ class DigitalBitbox_Client(HardwareClientBase):
             authenticated_msg = base64.b64encode(msg + hmac_digest)
             reply = self.hid_send_plain(authenticated_msg)
             if 'ciphertext' in reply:
-                b64_unencoded = bytes(base64.b64decode(''.join(reply["ciphertext"])))
+                b64_unencoded = bytes(base64.b64decode(''.join(reply["ciphertext"]), validate=True))
                 reply_hmac = b64_unencoded[-sha256_byte_len:]
                 hmac_calculated = hmac_oneshot(authentication_key, b64_unencoded[:-sha256_byte_len], hashlib.sha256)
                 if not hmac.compare_digest(reply_hmac, hmac_calculated):
@@ -565,10 +565,10 @@ class DigitalBitbox_KeyStore(Hardware_KeyStore):
             if p2pkhTransaction:
                 tx_copy = copy.deepcopy(tx)
                 # monkey-patch method of tx_copy instance to change serialization
-                def input_script(self, txin: PartialTxInput, *, estimate_size=False):
+                def input_script(self, txin: PartialTxInput, *, estimate_size=False) -> bytes:
                     desc = txin.script_descriptor
                     if isinstance(desc, descriptor.PKHDescriptor):
-                        return Transaction.get_preimage_script(txin)
+                        return txin.get_scriptcode_for_sighash()
                     raise Exception(f"unsupported txin type. only p2pkh is supported. got: {desc.to_string()[:10]}")
                 tx_copy.input_script = input_script.__get__(tx_copy, PartialTransaction)
                 tx_dbb_serialized = tx_copy.serialize_to_network()
@@ -706,7 +706,7 @@ class DigitalBitboxPlugin(HW_PluginBase):
     def comserver_post_notification(self, payload, *, handler: 'HardwareHandlerBase'):
         assert self.is_mobile_paired(), "unexpected mobile pairing error"
         url = 'https://digitalbitbox.com/smartverification/index.php'
-        key_s = base64.b64decode(self.digitalbitbox_config[ENCRYPTION_PRIVKEY_KEY])
+        key_s = base64.b64decode(self.digitalbitbox_config[ENCRYPTION_PRIVKEY_KEY], validate=True)
         ciphertext = EncodeAES_bytes(key_s, json.dumps(payload).encode('ascii'))
         args = 'c=data&s=0&dt=0&uuid=%s&pl=%s' % (
             self.digitalbitbox_config[CHANNEL_ID_KEY],

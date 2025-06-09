@@ -25,10 +25,10 @@
 
 import os
 import json
-from typing import Sequence, Tuple, Mapping, Type, List
+from typing import Sequence, Tuple, Mapping, Type, List, Optional
 
 from .lntransport import LNPeerAddr
-from .util import inv_dict, all_subclasses
+from .util import inv_dict, all_subclasses, classproperty
 from . import bitcoin
 
 
@@ -74,9 +74,6 @@ class AbstractNet:
     BIP44_COIN_TYPE: int
     LN_REALM_BYTE: int
     DEFAULT_PORTS: Mapping[str, str]
-    DEFAULT_SERVERS: Mapping[str, Mapping[str, str]]
-    FALLBACK_LN_NODES: Sequence[LNPeerAddr]
-    CHECKPOINTS: Sequence[Tuple[str, int]]
     LN_DNS_SEEDS: Sequence[str]
     XPRV_HEADERS: Mapping[str, int]
     XPRV_HEADERS_INV: Mapping[int, str]
@@ -96,6 +93,48 @@ class AbstractNet:
         global net
         net = cls
 
+    _cached_default_servers = None
+    @classproperty
+    def DEFAULT_SERVERS(cls) -> Mapping[str, Mapping[str, str]]:
+        if cls._cached_default_servers is None:
+            default_file = {} if cls.TESTNET else None  # for mainnet we hard-fail if the file is missing.
+            cls._cached_default_servers = read_json(os.path.join('chains', cls.NET_NAME, 'servers.json'), default_file)
+        return cls._cached_default_servers
+
+    _cached_fallback_lnnodes = None
+    @classproperty
+    def FALLBACK_LN_NODES(cls) -> Sequence[LNPeerAddr]:
+        if cls._cached_fallback_lnnodes is None:
+            default_file = {} if cls.TESTNET else None  # for mainnet we hard-fail if the file is missing.
+            d = read_json(os.path.join('chains', cls.NET_NAME, 'fallback_lnnodes.json'), default_file)
+            cls._cached_fallback_lnnodes = create_fallback_node_list(d)
+        return cls._cached_fallback_lnnodes
+
+    _cached_checkpoints = None
+    @classproperty
+    def CHECKPOINTS(cls) -> Sequence[Tuple[str, int]]:
+        if cls._cached_checkpoints is None:
+            default_file = [] if cls.TESTNET else None  # for mainnet we hard-fail if the file is missing.
+            cls._cached_checkpoints = read_json(os.path.join('chains', cls.NET_NAME, 'checkpoints.json'), default_file)
+        return cls._cached_checkpoints
+
+    @classmethod
+    def datadir_subdir(cls) -> Optional[str]:
+        """The name of the folder in the filesystem.
+        None means top-level, used by mainnet.
+        """
+        return cls.NET_NAME
+
+    @classmethod
+    def cli_flag(cls) -> str:
+        """as used in e.g. `$ run_electrum --testnet4`"""
+        return cls.NET_NAME
+
+    @classmethod
+    def config_key(cls) -> str:
+        """as used for SimpleConfig.get()"""
+        return cls.NET_NAME
+
 
 class BitcoinMainnet(AbstractNet):
 
@@ -108,9 +147,6 @@ class BitcoinMainnet(AbstractNet):
     BOLT11_HRP = SEGWIT_HRP
     GENESIS = "00000ac5927c594d49cc0bdb81759d0da8297eb614683d3acb62f0703b639023"
     DEFAULT_PORTS = {'t': '50001', 's': '50002'}
-    DEFAULT_SERVERS = read_json(os.path.join('chains', 'servers.json'))
-    FALLBACK_LN_NODES = create_fallback_node_list(read_json(os.path.join('chains', 'fallback_lnnodes_mainnet.json')))
-    CHECKPOINTS = read_json(os.path.join('chains', 'checkpoints.json'))
     BLOCK_HEIGHT_FIRST_LIGHTNING_CHANNELS = 497000
 
     XPRV_HEADERS = {
@@ -136,6 +172,10 @@ class BitcoinMainnet(AbstractNet):
         'lseed2.groestlcoin.org.',
     ]
 
+    @classmethod
+    def datadir_subdir(cls):
+        return None
+
 
 class BitcoinTestnet(AbstractNet):
 
@@ -148,9 +188,6 @@ class BitcoinTestnet(AbstractNet):
     BOLT11_HRP = SEGWIT_HRP
     GENESIS = "000000ffbb50fc9898cdd36ec163e6ba23230164c0052a28876255b7dcf2cd36"
     DEFAULT_PORTS = {'t': '51001', 's': '51002'}
-    DEFAULT_SERVERS = read_json(os.path.join('chains', 'servers_testnet.json'), {})
-    FALLBACK_LN_NODES = create_fallback_node_list(read_json(os.path.join('chains', 'fallback_lnnodes_testnet3.json'), {}))
-    CHECKPOINTS = read_json(os.path.join('chains', 'checkpoints_testnet.json'), [])
 
     XPRV_HEADERS = {
         'standard':    0x04358394,  # tprv
@@ -179,9 +216,6 @@ class BitcoinTestnet4(BitcoinTestnet):
 
     NET_NAME = "testnet4"
     GENESIS = "000000519399f41322d7a8c24bfdc409aa13a80160b43a57668c2ad62802fa5c"
-    DEFAULT_SERVERS = read_json(os.path.join('chains', 'servers_testnet4.json'), {})
-    FALLBACK_LN_NODES = create_fallback_node_list(read_json(os.path.join('chains', 'fallback_lnnodes_testnet4.json'), {}))
-    CHECKPOINTS = read_json(os.path.join('chains', 'checkpoints_testnet4.json'), [])
     LN_DNS_SEEDS = []
 
 
@@ -191,9 +225,6 @@ class BitcoinRegtest(BitcoinTestnet):
     SEGWIT_HRP = "grsrt"
     BOLT11_HRP = SEGWIT_HRP
     GENESIS = "000000ffbb50fc9898cdd36ec163e6ba23230164c0052a28876255b7dcf2cd366"
-    DEFAULT_SERVERS = read_json(os.path.join('chains', 'servers_regtest.json'), {})
-    FALLBACK_LN_NODES = []
-    CHECKPOINTS = []
     LN_DNS_SEEDS = []
 
 
@@ -206,9 +237,6 @@ class BitcoinSimnet(BitcoinTestnet):
     SEGWIT_HRP = "sg"
     BOLT11_HRP = SEGWIT_HRP
     GENESIS = "000000ffbb50fc9898cdd36ec163e6ba23230164c0052a28876255b7dcf2cd36"
-    DEFAULT_SERVERS = read_json(os.path.join('chains', 'servers_regtest.json'), {})
-    FALLBACK_LN_NODES = []
-    CHECKPOINTS = []
     LN_DNS_SEEDS = []
 
 
@@ -217,13 +245,15 @@ class BitcoinSignet(BitcoinTestnet):
     NET_NAME = "signet"
     BOLT11_HRP = "tgrss"
     GENESIS = "0000007fcaa2a27993c6cde9e7818c254357af517b876ceba2f23592bb14ab31"
-    DEFAULT_SERVERS = read_json(os.path.join('chains', 'servers_signet.json'), {})
-    FALLBACK_LN_NODES = create_fallback_node_list(read_json(os.path.join('chains', 'fallback_lnnodes_signet.json'), {}))
-    CHECKPOINTS = []
     LN_DNS_SEEDS = []
 
 
-NETS_LIST = tuple(all_subclasses(AbstractNet))
+NETS_LIST = tuple(all_subclasses(AbstractNet))  # type: Sequence[Type[AbstractNet]]
+
+assert len(NETS_LIST) == len(set([chain.NET_NAME for chain in NETS_LIST])), "NET_NAME must be unique for each concrete AbstractNet"
+assert len(NETS_LIST) == len(set([chain.datadir_subdir() for chain in NETS_LIST])), "datadir must be unique for each concrete AbstractNet"
+assert len(NETS_LIST) == len(set([chain.cli_flag() for chain in NETS_LIST])), "cli_flag must be unique for each concrete AbstractNet"
+assert len(NETS_LIST) == len(set([chain.config_key() for chain in NETS_LIST])), "config_key must be unique for each concrete AbstractNet"
 
 # don't import net directly, import the module instead (so that net is singleton)
 net = BitcoinMainnet  # type: Type[AbstractNet]

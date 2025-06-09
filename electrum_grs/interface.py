@@ -26,6 +26,7 @@ import os
 import re
 import ssl
 import sys
+import time
 import traceback
 import asyncio
 import socket
@@ -36,12 +37,14 @@ import itertools
 import logging
 import hashlib
 import functools
+import random
+import enum
 
 import aiorpcx
 from aiorpcx import RPCSession, Notification, NetAddress, NewlineFramer
 from aiorpcx.curio import timeout_after, TaskTimeout
 from aiorpcx.jsonrpc import JSONRPC, CodeMessageError
-from aiorpcx.rawsocket import RSClient
+from aiorpcx.rawsocket import RSClient, RSTransport
 import certifi
 
 from .util import (ignore_exceptions, log_exceptions, bfh, ESocksProxy,
@@ -130,6 +133,14 @@ def assert_list_or_tuple(val: Any) -> None:
         raise RequestCorrupted(f'{val!r} should be a list or tuple')
 
 
+class ChainResolutionMode(enum.Enum):
+    CATCHUP = enum.auto()
+    BACKWARD = enum.auto()
+    BINARY = enum.auto()
+    FORK = enum.auto()
+    NO_FORK = enum.auto()
+
+
 class NotificationSession(RPCSession):
 
     def __init__(self, *args, interface: 'Interface', **kwargs):
@@ -138,6 +149,7 @@ class NotificationSession(RPCSession):
         self.cache = {}
         self._msg_counter = itertools.count(start=1)
         self.interface = interface
+        self.taskgroup = interface.taskgroup
         self.cost_hard_limit = 0  # disable aiorpcx resource limits
 
     async def handle_request(self, request):
@@ -273,6 +285,112 @@ class _RSClient(RSClient):
             raise ConnectError(e) from e
 
 
+class PaddedRSTransport(RSTransport):
+    """A raw socket transport that provides basic countermeasures against traffic analysis
+    by padding the jsonrpc payload with whitespaces to have ~uniform-size TCP packets.
+    (it is assumed that a network observer does not see plaintext transport contents,
+    due to it being wrapped e.g. in TLS)
+    """
+
+    MIN_PACKET_SIZE = 1024
+    WAIT_FOR_BUFFER_GROWTH_SECONDS = 1.0
+
+    session: Optional['RPCSession']
+
+    def __init__(self, *args, **kwargs):
+        RSTransport.__init__(self, *args, **kwargs)
+        self._sbuffer = bytearray()  # "send buffer"
+        self._sbuffer_task = None  # type: Optional[asyncio.Task]
+        self._sbuffer_has_data_evt = asyncio.Event()
+        self._last_send = time.monotonic()
+        self._force_send = False  # type: bool
+
+    # note: this does not call super().write() but is a complete reimplementation
+    async def write(self, message):
+        await self._can_send.wait()
+        if self.is_closing():
+            return
+        framed_message = self._framer.frame(message)
+        self._sbuffer += framed_message
+        self._sbuffer_has_data_evt.set()
+        self._maybe_consume_sbuffer()
+
+    def _maybe_consume_sbuffer(self) -> None:
+        """Maybe take some data from sbuffer and send it on the wire."""
+        if not self._can_send.is_set() or self.is_closing():
+            return
+        buf = self._sbuffer
+        if not buf:
+            return
+        # if there is enough data in the buffer, or if we haven't sent in a while, send now:
+        if not (
+            self._force_send
+            or len(buf) >= self.MIN_PACKET_SIZE
+            or self._last_send + self.WAIT_FOR_BUFFER_GROWTH_SECONDS < time.monotonic()
+        ):
+            return
+        assert buf[-2:] in (b"}\n", b"]\n"), f"unexpected json-rpc terminator: {buf[-2:]=!r}"
+        # either (1) pad length to next power of two, to create "lsize" packet:
+        payload_lsize = len(buf)
+        total_lsize = max(self.MIN_PACKET_SIZE, 2 ** (payload_lsize.bit_length()))
+        npad_lsize = total_lsize - payload_lsize
+        # or if that wasted a lot of bandwidth with padding, (2) defer sending some messages
+        # and create a packet with half that size ("ssize", s for small)
+        total_ssize = max(self.MIN_PACKET_SIZE, total_lsize // 2)
+        payload_ssize = buf.rfind(b"\n", 0, total_ssize)
+        if payload_ssize != -1:
+            payload_ssize += 1  # for "\n" char
+            npad_ssize = total_ssize - payload_ssize
+        else:
+            npad_ssize = float("inf")
+        # decide between (1) and (2):
+        if self._force_send or npad_lsize <= npad_ssize:
+            # (1) create "lsize" packet: consume full buffer
+            npad = npad_lsize
+            p_idx = payload_lsize
+        else:
+            # (2) create "ssize" packet: consume some, but defer some for later
+            npad = npad_ssize
+            p_idx = payload_ssize
+        # pad by adding spaces near end
+        # self.session.maybe_log(
+        #     f"PaddedRSTransport. calling low-level write(). "
+        #     f"chose between (lsize:{payload_lsize}+{npad_lsize}, ssize:{payload_ssize}+{npad_ssize}). "
+        #     f"won: {'tie' if npad_lsize == npad_ssize else 'lsize' if npad_lsize < npad_ssize else 'ssize'}."
+        # )
+        json_rpc_terminator = buf[p_idx-2:p_idx]
+        assert json_rpc_terminator in (b"}\n", b"]\n"), f"unexpected {json_rpc_terminator=!r}"
+        buf2 = buf[:p_idx-2] + (npad * b" ") + json_rpc_terminator
+        self._asyncio_transport.write(buf2)
+        self._last_send = time.monotonic()
+        del self._sbuffer[:p_idx]
+        if not self._sbuffer:
+            self._sbuffer_has_data_evt.clear()
+
+    async def _poll_sbuffer(self):
+        while not self.is_closing():
+            await self._can_send.wait()
+            await self._sbuffer_has_data_evt.wait()  # to avoid busy-waiting
+            self._maybe_consume_sbuffer()
+            # If there is still data in the buffer, sleep until it would time out.
+            # note: If the transport is ~idle, when we wake up, we will send the current buf data,
+            #       but if busy, we might wake up to completely new buffer contents. Either is fine.
+            if len(self._sbuffer) > 0:
+                timeout_abs = self._last_send + self.WAIT_FOR_BUFFER_GROWTH_SECONDS
+                timeout_rel = max(0.0, timeout_abs - time.monotonic())
+                await asyncio.sleep(timeout_rel)
+
+    def connection_made(self, transport: asyncio.BaseTransport):
+        super().connection_made(transport)
+        if isinstance(self.session, NotificationSession):
+            coro = self.session.taskgroup.spawn(self._poll_sbuffer())
+            self._sbuffer_task = self.loop.create_task(coro)
+        else:
+            # This a short-lived "fetch_certificate"-type session.
+            # No polling here, we always force-empty the buffer.
+            self._force_send = True
+
+
 class ServerAddr:
 
     def __init__(self, host: str, port: Union[int, str], *, protocol: str = None):
@@ -374,8 +492,6 @@ def _get_cert_path_for_host(*, config: 'SimpleConfig', host: str) -> str:
 
 class Interface(Logger):
 
-    LOGGING_SHORTCUT = 'i'
-
     def __init__(self, *, network: 'Network', server: ServerAddr):
         self.ready = network.asyncio_loop.create_future()
         self.got_disconnected = asyncio.Event()
@@ -403,7 +519,7 @@ class Interface(Logger):
         # Note that these values are updated before they are verified.
         # Especially during initial header sync, verification can take a long time.
         # Failing verification will get the interface closed.
-        self.tip_header = None
+        self.tip_header = None  # type: Optional[dict]
         self.tip = 0
 
         self.fee_estimates_eta = {}  # type: Dict[int, int]
@@ -436,13 +552,13 @@ class Interface(Logger):
     def __str__(self):
         return f"<Interface {self.diagnostic_name()}>"
 
-    async def is_server_ca_signed(self, ca_ssl_context):
+    async def is_server_ca_signed(self, ca_ssl_context: ssl.SSLContext) -> bool:
         """Given a CA enforcing SSL context, returns True if the connection
         can be established. Returns False if the server has a self-signed
         certificate but otherwise is okay. Any other failures raise.
         """
         try:
-            await self.open_session(ca_ssl_context, exit_early=True)
+            await self.open_session(ssl_context=ca_ssl_context, exit_early=True)
         except ConnectError as e:
             cause = e.__cause__
             if (isinstance(cause, ssl.SSLCertVerificationError)
@@ -455,7 +571,7 @@ class Interface(Logger):
         # Good. We will use this server as CA-signed.
         return True
 
-    async def _try_saving_ssl_cert_for_first_time(self, ca_ssl_context):
+    async def _try_saving_ssl_cert_for_first_time(self, ca_ssl_context: ssl.SSLContext) -> None:
         ca_signed = await self.is_server_ca_signed(ca_ssl_context)
         if ca_signed:
             if self._get_expected_fingerprint():
@@ -492,10 +608,10 @@ class Interface(Logger):
             self.logger.info(f"certificate has expired: {e}")
             os.unlink(self.cert_path)  # delete pinned cert only in this case
             return False
-        self._verify_certificate_fingerprint(bytearray(b))
+        self._verify_certificate_fingerprint(bytes(b))
         return True
 
-    async def _get_ssl_context(self):
+    async def _get_ssl_context(self) -> Optional[ssl.SSLContext]:
         if self.protocol != 's':
             # using plaintext TCP
             return None
@@ -533,6 +649,9 @@ class Interface(Logger):
                 self.logger.debug(f"(disconnect) trace for {repr(e)}", exc_info=True)
             finally:
                 self.got_disconnected.set()
+                # Make sure taskgroup gets cleaned-up. This explicit clean-up is needed here
+                # in case the "with taskgroup" ctx mgr never got a chance to run:
+                await self.taskgroup.cancel_remaining()
                 await self.network.connection_down(self)
                 # if was not 'ready' yet, schedule waiting coroutines:
                 self.ready.cancel()
@@ -548,7 +667,7 @@ class Interface(Logger):
             self.logger.info(f'disconnecting due to: {repr(e)}')
             return
         try:
-            await self.open_session(ssl_context)
+            await self.open_session(ssl_context=ssl_context)
         except (asyncio.CancelledError, ConnectError, aiorpcx.socks.SOCKSError) as e:
             # make SSL errors for main interface more visible (to help servers ops debug cert pinning issues)
             if (isinstance(e, ConnectError) and isinstance(e.__cause__, ssl.SSLError)
@@ -607,9 +726,13 @@ class Interface(Logger):
         sslc = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS_CLIENT)
         sslc.check_hostname = False
         sslc.verify_mode = ssl.CERT_NONE
-        async with _RSClient(session_factory=RPCSession,
-                             host=self.host, port=self.port,
-                             ssl=sslc, proxy=self.proxy) as session:
+        async with _RSClient(
+            session_factory=RPCSession,
+            host=self.host, port=self.port,
+            ssl=sslc,
+            proxy=self.proxy,
+            transport=PaddedRSTransport,
+        ) as session:
             asyncio_transport = session.transport._asyncio_transport  # type: asyncio.BaseTransport
             ssl_object = asyncio_transport.get_extra_info("ssl_object")  # type: ssl.SSLObject
             return ssl_object.getpeercert(binary_form=True)
@@ -617,8 +740,9 @@ class Interface(Logger):
     def _get_expected_fingerprint(self) -> Optional[str]:
         if self.is_main_server():
             return self.network.config.NETWORK_SERVERFINGERPRINT
+        return None
 
-    def _verify_certificate_fingerprint(self, certificate):
+    def _verify_certificate_fingerprint(self, certificate: bytes) -> None:
         expected_fingerprint = self._get_expected_fingerprint()
         if not expected_fingerprint:
             return
@@ -629,21 +753,27 @@ class Interface(Logger):
             raise ErrorSSLCertFingerprintMismatch('Refusing to connect to server due to cert fingerprint mismatch')
         self.logger.info("cert fingerprint verification passed")
 
-    async def get_block_header(self, height, assert_mode):
+    async def get_block_header(self, height: int, *, mode: ChainResolutionMode) -> dict:
         if not is_non_negative_integer(height):
             raise Exception(f"{repr(height)} is not a block height")
-        self.logger.info(f'requesting block header {height} in mode {assert_mode}')
+        self.logger.info(f'requesting block header {height} in {mode=}')
         # use lower timeout as we usually have network.bhi_lock here
         timeout = self.network.get_network_timeout_seconds(NetworkTimeout.Urgent)
         res = await self.session.send_request('blockchain.block.header', [height], timeout=timeout)
         return blockchain.deserialize_header(bytes.fromhex(res), height)
 
-    async def request_chunk(self, height: int, tip=None, *, can_return_early=False):
+    async def request_chunk(
+        self,
+        height: int,
+        *,
+        tip: Optional[int] = None,
+        can_return_early: bool = False,
+    ) -> Optional[Tuple[bool, int]]:
         if not is_non_negative_integer(height):
             raise Exception(f"{repr(height)} is not a block height")
         index = height // 2016
         if can_return_early and index in self._requested_chunks:
-            return
+            return None
         self.logger.info(f"requesting chunk from height {height}")
         size = 2016
         if tip is not None:
@@ -676,11 +806,20 @@ class Interface(Logger):
         return (self.network.interface == self or
                 self.network.interface is None and self.network.default_server == self.server)
 
-    async def open_session(self, sslc, exit_early=False):
+    async def open_session(
+        self,
+        *,
+        ssl_context: Optional[ssl.SSLContext],
+        exit_early: bool = False,
+    ):
         session_factory = lambda *args, iface=self, **kwargs: NotificationSession(*args, **kwargs, interface=iface)
-        async with _RSClient(session_factory=session_factory,
-                             host=self.host, port=self.port,
-                             ssl=sslc, proxy=self.proxy) as session:
+        async with _RSClient(
+            session_factory=session_factory,
+            host=self.host, port=self.port,
+            ssl=ssl_context,
+            proxy=self.proxy,
+            transport=PaddedRSTransport,
+        ) as session:
             self.session = session  # type: NotificationSession
             self.session.set_default_timeout(self.network.get_network_timeout_seconds(NetworkTimeout.Generic))
             try:
@@ -732,8 +871,16 @@ class Interface(Logger):
                 raise GracefulDisconnect('session was closed')
 
     async def ping(self):
+        # We periodically send a "ping" msg to make sure the server knows we are still here.
+        # Adding a bit of randomness generates some noise against traffic analysis.
         while True:
-            await asyncio.sleep(300)
+            await asyncio.sleep(random.random() * 300)
+            await self.session.send_request('server.ping')
+            await self._maybe_send_noise()
+
+    async def _maybe_send_noise(self):
+        while random.random() < 0.2:
+            await asyncio.sleep(random.random())
             await self.session.send_request('server.ping')
 
     async def request_fee_estimates(self):
@@ -773,11 +920,14 @@ class Interface(Logger):
             self._mark_ready()
             blockchain_updated = await self._process_header_at_tip()
             # header processing done
+            if self.is_main_server():
+                self.logger.info(f"new chain tip on main interface. {height=}")
             if blockchain_updated:
                 util.trigger_callback('blockchain_updated')
             util.trigger_callback('network_updated')
             await self.network.switch_unwanted_fork_interface()
             await self.network.switch_lagging_interface()
+            await self.taskgroup.spawn(self._maybe_send_noise())
 
     async def _process_header_at_tip(self) -> bool:
         """Returns:
@@ -789,20 +939,25 @@ class Interface(Logger):
             if self.blockchain.height() >= height and self.blockchain.check_header(header):
                 # another interface amended the blockchain
                 return False
-            _, height = await self.step(height, header)
+            _, height = await self.step(height, header=header)
             # in the simple case, height == self.tip+1
             if height <= self.tip:
                 await self.sync_until(height)
             return True
 
-    async def sync_until(self, height, next_height=None):
+    async def sync_until(
+        self,
+        height: int,
+        *,
+        next_height: Optional[int] = None,
+    ) -> Tuple[ChainResolutionMode, int]:
         if next_height is None:
             next_height = self.tip
-        last = None
+        last = None  # type: Optional[ChainResolutionMode]
         while last is None or height <= next_height:
             prev_last, prev_height = last, height
-            if next_height > height + 10:
-                could_connect, num_headers = await self.request_chunk(height, next_height)
+            if next_height > height + 10:  # TODO make smarter. the protocol allows asking for n headers
+                could_connect, num_headers = await self.request_chunk(height, tip=next_height)
                 if not could_connect:
                     if height <= constants.net.max_checkpoint():
                         raise GracefulDisconnect('server chain conflicts with checkpoints or genesis')
@@ -812,16 +967,21 @@ class Interface(Logger):
                 util.trigger_callback('network_updated')
                 height = (height // 2016 * 2016) + num_headers
                 assert height <= next_height+1, (height, self.tip)
-                last = 'catchup'
+                last = ChainResolutionMode.CATCHUP
             else:
                 last, height = await self.step(height)
             assert (prev_last, prev_height) != (last, height), 'had to prevent infinite loop in interface.sync_until'
         return last, height
 
-    async def step(self, height, header=None):
+    async def step(
+        self,
+        height: int,
+        *,
+        header: Optional[dict] = None,  # at 'height'
+    ) -> Tuple[ChainResolutionMode, int]:
         assert 0 <= height <= self.tip, (height, self.tip)
         if header is None:
-            header = await self.get_block_header(height, 'catchup')
+            header = await self.get_block_header(height, mode=ChainResolutionMode.CATCHUP)
 
         chain = blockchain.check_header(header) if 'mock' not in header else header['mock']['check'](header)
         if chain:
@@ -830,12 +990,12 @@ class Interface(Logger):
             # we might know the blockhash (enough for check_header) but
             # not have the header itself. e.g. regtest chain with only genesis.
             # this situation resolves itself on the next block
-            return 'catchup', height+1
+            return ChainResolutionMode.CATCHUP, height+1
 
         can_connect = blockchain.can_connect(header) if 'mock' not in header else header['mock']['connect'](height)
         if not can_connect:
             self.logger.info(f"can't connect new block: {height=}")
-            height, header, bad, bad_header = await self._search_headers_backwards(height, header)
+            height, header, bad, bad_header = await self._search_headers_backwards(height, header=header)
             chain = blockchain.check_header(header) if 'mock' not in header else header['mock']['check'](header)
             can_connect = blockchain.can_connect(header) if 'mock' not in header else header['mock']['connect'](height)
             assert chain or can_connect
@@ -845,12 +1005,18 @@ class Interface(Logger):
             if isinstance(can_connect, Blockchain):  # not when mocking
                 self.blockchain = can_connect
                 self.blockchain.save_header(header)
-            return 'catchup', height
+            return ChainResolutionMode.CATCHUP, height
 
         good, bad, bad_header = await self._search_headers_binary(height, bad, bad_header, chain)
         return await self._resolve_potential_chain_fork_given_forkpoint(good, bad, bad_header)
 
-    async def _search_headers_binary(self, height, bad, bad_header, chain):
+    async def _search_headers_binary(
+        self,
+        height: int,
+        bad: int,
+        bad_header: dict,
+        chain: Optional[Blockchain],
+    ) -> Tuple[int, int, dict]:
         assert bad == bad_header['block_height']
         _assert_header_does_not_check_against_any_chain(bad_header)
 
@@ -860,7 +1026,7 @@ class Interface(Logger):
             assert good < bad, (good, bad)
             height = (good + bad) // 2
             self.logger.info(f"binary step. good {good}, bad {bad}, height {height}")
-            header = await self.get_block_header(height, 'binary')
+            header = await self.get_block_header(height, mode=ChainResolutionMode.BINARY)
             chain = blockchain.check_header(header) if 'mock' not in header else header['mock']['check'](header)
             if chain:
                 self.blockchain = chain if isinstance(chain, Blockchain) else self.blockchain
@@ -880,7 +1046,12 @@ class Interface(Logger):
         self.logger.info(f"binary search exited. good {good}, bad {bad}")
         return good, bad, bad_header
 
-    async def _resolve_potential_chain_fork_given_forkpoint(self, good, bad, bad_header):
+    async def _resolve_potential_chain_fork_given_forkpoint(
+        self,
+        good: int,
+        bad: int,
+        bad_header: dict,
+    ) -> Tuple[ChainResolutionMode, int]:
         assert good + 1 == bad
         assert bad == bad_header['block_height']
         _assert_header_does_not_check_against_any_chain(bad_header)
@@ -892,7 +1063,7 @@ class Interface(Logger):
         if bh == good:
             height = good + 1
             self.logger.info(f"catching up from {height}")
-            return 'no_fork', height
+            return ChainResolutionMode.NO_FORK, height
 
         # this is a new fork we don't yet have
         height = bad + 1
@@ -901,16 +1072,21 @@ class Interface(Logger):
         b = forkfun(bad_header)  # type: Blockchain
         self.blockchain = b
         assert b.forkpoint == bad
-        return 'fork', height
+        return ChainResolutionMode.FORK, height
 
-    async def _search_headers_backwards(self, height, header):
+    async def _search_headers_backwards(
+        self,
+        height: int,
+        *,
+        header: dict,
+    ) -> Tuple[int, dict, int, dict]:
         async def iterate():
             nonlocal height, header
             checkp = False
             if height <= constants.net.max_checkpoint():
                 height = constants.net.max_checkpoint()
                 checkp = True
-            header = await self.get_block_header(height, 'backward')
+            header = await self.get_block_header(height, mode=ChainResolutionMode.BACKWARD)
             chain = blockchain.check_header(header) if 'mock' not in header else header['mock']['check'](header)
             can_connect = blockchain.can_connect(header) if 'mock' not in header else header['mock']['connect'](height)
             if chain or can_connect:
