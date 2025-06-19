@@ -408,7 +408,7 @@ class Commands(Logger):
         self._setconfig(key, value)
 
     @command('')
-    async def clearconfig(self, key):
+    async def unsetconfig(self, key):
         """
         Clear a configuration variable.
         The variable will be reset to its default value.
@@ -1910,7 +1910,7 @@ class Commands(Logger):
                 lightning_amount_sat = satoshis(lightning_amount)
                 onchain_amount_sat = satoshis(onchain_amount)
                 txid = await wallet.lnworker.swap_manager.normal_swap(
-                    transport,
+                    transport=transport,
                     lightning_amount_sat=lightning_amount_sat,
                     expected_onchain_amount_sat=onchain_amount_sat,
                     password=password,
@@ -1943,10 +1943,10 @@ class Commands(Logger):
                 funding_txid = None
             else:
                 lightning_amount_sat = satoshis(lightning_amount)
-                claim_fee = sm.get_swap_tx_fee()
+                claim_fee = sm.get_fee_for_txbatcher()
                 onchain_amount_sat = satoshis(onchain_amount) + claim_fee
                 funding_txid = await wallet.lnworker.swap_manager.reverse_swap(
-                    transport,
+                    transport=transport,
                     lightning_amount_sat=lightning_amount_sat,
                     expected_onchain_amount_sat=onchain_amount_sat,
                 )

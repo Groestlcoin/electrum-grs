@@ -1,3 +1,39 @@
+#!/usr/bin/env python
+#
+# Electrum - lightweight Bitcoin client
+# Copyright (C) 2025 The Electrum Developers
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+import asyncio
+import json
+import time
+import ssl
+import logging
+import urllib.parse
+from typing import TYPE_CHECKING, Optional, List, Tuple, Awaitable
+
+import electrum_aionostr as aionostr
+from electrum_aionostr.event import Event as nEvent
+from electrum_aionostr.key import PrivateKey
+
 from electrum_grs.lnworker import PaymentDirection
 from electrum_grs.plugin import BasePlugin, hook
 from electrum_grs.logging import Logger
@@ -5,24 +41,13 @@ from electrum_grs.util import log_exceptions, ca_path, OldTaskGroup, get_asyncio
     LightningHistoryItem, event_listener, EventListener, make_aiohttp_proxy_connector, \
     get_running_loop
 from electrum_grs.invoices import Invoice, Request, PR_UNKNOWN, PR_PAID, BaseInvoice, PR_INFLIGHT
-from electrum_grs.constants import net
-import electrum_aionostr as aionostr
-from electrum_aionostr.event import Event as nEvent
-from electrum_aionostr.key import PrivateKey
-
-import asyncio
-import json
-import time
-import ssl
-import logging
-import urllib.parse
-
-from typing import TYPE_CHECKING, Optional, List, Tuple, Awaitable
+from electrum_grs import constants
 
 if TYPE_CHECKING:
+    from aiohttp_socks import ProxyConnector
+
     from electrum_grs.simple_config import SimpleConfig
     from electrum_grs.wallet import Abstract_Wallet
-    from aiohttp_socks import ProxyConnector
 
 
 class NWCServerPlugin(BasePlugin):
@@ -31,8 +56,8 @@ class NWCServerPlugin(BasePlugin):
     def __init__(self, parent, config: 'SimpleConfig', name):
         BasePlugin.__init__(self, parent, config, name)
         self.config = config
-        self.connections = None # type: Optional[dict[str, dict]]  # pubkey_hex -> connection data
-        self.nwc_server = None  # type: Optional[NWCServer]
+        self.connections = None  # type: Optional[dict[str, dict]]  # pubkey_hex -> connection data
+        self.nwc_server = None   # type: Optional[NWCServer]
         self.taskgroup = OldTaskGroup()
         self.initialized = False
         if not self.config.NWC_RELAY:  # type: ignore  # defined in __init__
@@ -155,7 +180,7 @@ class NWCServer(Logger, EventListener):
     NOTIFICATION_EVENT_KIND: int = 23196
     SUPPORTED_SPENDING_METHODS: set[str] = {'pay_invoice', 'multi_pay_invoice'}
     SUPPORTED_METHODS: set[str] = {'make_invoice', 'lookup_invoice', 'get_balance', 'get_info',
-                                    'list_transactions', 'notifications'}.union(SUPPORTED_SPENDING_METHODS)
+                                   'list_transactions', 'notifications'}.union(SUPPORTED_SPENDING_METHODS)
     SUPPORTED_NOTIFICATIONS: list[str] = ["payment_sent", "payment_received"]
 
     def __init__(
@@ -269,7 +294,7 @@ class NWCServer(Logger, EventListener):
         query = {
             "authors": list(self.connections.keys()),  # the pubkeys of the client connections
             "kinds": [self.REQUEST_EVENT_KIND],
-            "limit": 0,
+            "limit": 0,  # requests only new events after creating this subscription
             "since": int(time.time())
         }
         async for event in self.manager.get_events(query, single_event=False, only_stored=False):
@@ -290,8 +315,16 @@ class NWCServer(Logger, EventListener):
                 await self.send_error(event, "NOT_IMPLEMENTED")
                 continue
 
-            if event.created_at < int(time.time()) - 15:
+            # if the request has an explicitly set expiration tag, ignore it if it is expired
+            # otherwise ignore requests older than 30 sec to not handle requests the user may
+            # already expect to have timed out
+            if event.expires_at() is not None:
+                if event.is_expired():
+                    self.logger.debug(f"expired nwc request event: {event.content}")
+                    continue
+            elif event.created_at < int(time.time()) - 30:
                 self.logger.debug(f"old nwc request event: {event.content}")
+                await self.send_error(event, "OTHER", f"not handling too old request")
                 continue
 
             # decrypt the requests content
@@ -568,7 +601,7 @@ class NWCServer(Logger, EventListener):
                 "alias": self.config.LIGHTNING_NODE_ALIAS,
                 "color": self.config.LIGHTNING_NODE_COLOR_RGB,
                 "pubkey": self.wallet.lnworker.node_keypair.pubkey.hex(),
-                "network": net.NET_NAME,
+                "network": constants.net.NET_NAME,
                 "block_height": height,
                 "block_hash": blockhash,
                 "methods": list(supported_methods),

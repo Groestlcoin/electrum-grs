@@ -32,7 +32,8 @@ class QESwapServerNPubListModel(QAbstractListModel):
     _logger = get_logger(__name__)
 
     # define listmodel rolemap
-    _ROLE_NAMES= ('npub', 'timestamp', 'percentage_fee', 'mining_fee', 'min_amount', 'max_forward_amount', 'max_reverse_amount')
+    _ROLE_NAMES= ('npub', 'server_pubkey', 'timestamp', 'percentage_fee', 'mining_fee',
+                  'min_amount', 'max_forward_amount', 'max_reverse_amount')
     _ROLE_KEYS = range(Qt.ItemDataRole.UserRole, Qt.ItemDataRole.UserRole + len(_ROLE_NAMES))
     _ROLE_MAP  = dict(zip(_ROLE_KEYS, [bytearray(x.encode()) for x in _ROLE_NAMES]))
 
@@ -69,6 +70,7 @@ class QESwapServerNPubListModel(QAbstractListModel):
     def offer_to_model(self, x: 'SwapOffer'):
         return {
             'npub': x.server_npub,
+            'server_pubkey': x.server_pubkey,
             'percentage_fee': x.pairs.percentage,
             'mining_fee': x.pairs.mining_fee,
             'min_amount': x.pairs.min_amount,
@@ -543,7 +545,7 @@ class QESwapHelper(AuthMixin, QObject, QtEventListener):
             return
         outputs = [PartialTxOutput.from_address_and_value(DummyAddress.SWAP, onchain_amount)]
         coins = self._wallet.wallet.get_spendable_coins(None)
-        fee_policy = FeePolicy(self._wallet.wallet.config.FEE_POLICY)
+        fee_policy = FeePolicy('eta:2')
         try:
             self._tx = self._wallet.wallet.make_unsigned_transaction(
                 coins=coins,
@@ -581,7 +583,7 @@ class QESwapHelper(AuthMixin, QObject, QtEventListener):
         server_miningfee = swap_manager.mining_fee
         self.serverMiningfee = QEAmount(amount_sat=server_miningfee)
         if self.isReverse:
-            self.miningfee = QEAmount(amount_sat=swap_manager.get_swap_tx_fee())
+            self.miningfee = QEAmount(amount_sat=swap_manager.get_fee_for_txbatcher())
             self.check_valid(self._send_amount, self._receive_amount)
         else:
             # update tx only if slider isn't moved for a while
@@ -621,13 +623,14 @@ class QESwapHelper(AuthMixin, QObject, QtEventListener):
                 self.userinfo = _('Performing swap...')
                 self.state = QESwapHelper.State.Started
                 self._swap, invoice = await self._wallet.wallet.lnworker.swap_manager.request_normal_swap(
-                    self.swap_transport,
+                    transport=self.swap_transport,
                     lightning_amount_sat=lightning_amount,
                     expected_onchain_amount_sat=onchain_amount,
                 )
 
                 tx = self._wallet.wallet.lnworker.swap_manager.create_funding_tx(self._swap, dummy_tx, password=self._wallet.password)
-                coro2 = self._wallet.wallet.lnworker.swap_manager.wait_for_htlcs_and_broadcast(self.swap_transport, swap=self._swap, invoice=invoice, tx=tx)
+                coro2 = self._wallet.wallet.lnworker.swap_manager.wait_for_htlcs_and_broadcast(
+                    transport=self.swap_transport, swap=self._swap, invoice=invoice, tx=tx)
                 self._fut_htlc_wait = fut = asyncio.create_task(coro2)
 
                 self.canCancel = True
@@ -677,7 +680,7 @@ class QESwapHelper(AuthMixin, QObject, QtEventListener):
             if max_amount > max_swap_amount:
                 onchain_amount = max_swap_amount
         outputs = [PartialTxOutput.from_address_and_value(DummyAddress.SWAP, onchain_amount)]
-        fee_policy = FeePolicy(self._wallet.wallet.config.FEE_POLICY)
+        fee_policy = FeePolicy('eta:2')
         try:
             tx = self._wallet.wallet.make_unsigned_transaction(
                 coins=coins,
@@ -701,9 +704,9 @@ class QESwapHelper(AuthMixin, QObject, QtEventListener):
                 self.state = QESwapHelper.State.Started
                 await swap_manager.is_initialized.wait()
                 txid = await swap_manager.reverse_swap(
-                    self.swap_transport,
+                    transport=self.swap_transport,
                     lightning_amount_sat=lightning_amount,
-                    expected_onchain_amount_sat=onchain_amount + swap_manager.get_swap_tx_fee(),
+                    expected_onchain_amount_sat=onchain_amount + swap_manager.get_fee_for_txbatcher(),
                 )
                 try:  # swaphelper might be destroyed at this point
                     if txid:

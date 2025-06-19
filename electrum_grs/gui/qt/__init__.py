@@ -44,13 +44,19 @@ from PyQt6.QtCore import QObject, pyqtSignal, QTimer, Qt
 
 import PyQt6.QtCore as QtCore
 
+from electrum_grs.logging import Logger, get_logger
+_logger = get_logger(__name__)
+
 try:
     # Preload QtMultimedia at app start, if available.
     # We use QtMultimedia on some platforms for camera-handling, and
     # lazy-loading it later led to some crashes. Maybe due to bugs in PyQt. (see #7725)
     from PyQt6.QtMultimedia import QMediaDevices; del QMediaDevices
-except ImportError as e:
+except (ImportError, RuntimeError) as e:
+    _logger.debug(f"failed to import optional dependency: PyQt6.QtMultimedia. exc={repr(e)}")
     pass  # failure is ok; it is an optional dependency.
+else:
+    _logger.debug(f"successfully preloaded optional dependency: PyQt6.QtMultimedia")
 
 if sys.platform == "linux" and os.environ.get("APPIMAGE"):
     # For AppImage, we default to xcb qt backend, for better support of older system.
@@ -67,7 +73,6 @@ from electrum_grs.util import (UserCancelled, profiler, send_exception_to_crash_
                            standardize_path)
 from electrum_grs.wallet import Wallet, Abstract_Wallet
 from electrum_grs.wallet_db import WalletRequiresSplit, WalletRequiresUpgrade, WalletUnfinished
-from electrum_grs.logging import Logger
 from electrum_grs.gui import BaseElectrumGui
 from electrum_grs.simple_config import SimpleConfig
 from electrum_grs.wizard import WizardViewState
@@ -157,6 +162,8 @@ class ElectrumGui(BaseElectrumGui, Logger):
         self.screenshot_protection_efilter = ScreenshotProtectionEventFilter()
         if sys.platform in ['win32', 'windows'] and self.config.GUI_QT_SCREENSHOT_PROTECTION:
             self.app.installEventFilter(self.screenshot_protection_efilter)
+        # explicitly set 'AA_DontShowIconsInMenus' False so menu icons are shown on MacOS
+        self.app.setAttribute(Qt.ApplicationAttribute.AA_DontShowIconsInMenus, on=False)
         self.app.setWindowIcon(read_QIcon("electrum.png"))
         self.translator = ElectrumTranslator()
         self.app.installTranslator(self.translator)

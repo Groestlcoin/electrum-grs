@@ -245,6 +245,11 @@ class SwapManager(Logger):
     @log_exceptions
     async def run_nostr_server(self):
         await self.set_nostr_proof_of_work()
+
+        while self.wallet.has_password() and self.wallet.get_unlocked_password() is None:
+            self.logger.info("This wallet is password-protected. Please unlock it to start the swapserver plugin")
+            await asyncio.sleep(10)
+
         with NostrTransport(self.config, self, self.lnworker.nostr_keypair) as transport:
             await transport.is_connected.wait()
             self.logger.info(f'nostr is connected')
@@ -361,13 +366,18 @@ class SwapManager(Logger):
         self.lnwatcher.remove_callback(swap.lockup_address)
         if not swap.is_funded():
             with self.swaps_lock:
-                self._swaps.pop(swap.payment_hash.hex())
+                if self._swaps.pop(swap.payment_hash.hex(), None) is None:
+                    self.logger.debug(f"swap {swap.payment_hash.hex()} has already been deleted.")
                 # TODO clean-up other swaps dicts, i.e. undo _add_or_reindex_swap()
 
     @classmethod
     def extract_preimage(cls, swap: SwapData, claim_tx: Transaction) -> Optional[bytes]:
         for txin in claim_tx.inputs():
-            preimage = txin.witness_elements()[1]
+            witness = txin.witness_elements()
+            if not witness:
+                # tx may be unsigned
+                continue
+            preimage = witness[1]
             if sha256(preimage) == swap.payment_hash:
                 return preimage
         return None
@@ -475,9 +485,6 @@ class SwapManager(Logger):
             except BelowDustLimit:
                 self.logger.info('utxo value below dust threshold')
                 return
-
-    def get_swap_tx_fee(self):
-        return self._get_tx_fee(self.config.FEE_POLICY)
 
     def get_fee_for_txbatcher(self):
         return self._get_tx_fee(self.config.FEE_POLICY_SWAPS)
@@ -687,6 +694,7 @@ class SwapManager(Logger):
     async def normal_swap(
             self,
             *,
+            transport: 'SwapServerTransport',
             lightning_amount_sat: int,
             expected_onchain_amount_sat: int,
             password,
@@ -715,15 +723,18 @@ class SwapManager(Logger):
         assert self.network
         assert self.lnwatcher
         swap, invoice = await self.request_normal_swap(
+            transport=transport,
             lightning_amount_sat=lightning_amount_sat,
             expected_onchain_amount_sat=expected_onchain_amount_sat,
             channels=channels,
         )
         tx = self.create_funding_tx(swap, tx, password=password)
-        return await self.wait_for_htlcs_and_broadcast(swap=swap, invoice=invoice, tx=tx)
+        return await self.wait_for_htlcs_and_broadcast(transport=transport, swap=swap, invoice=invoice, tx=tx)
 
     async def request_normal_swap(
-            self, transport, *,
+            self,
+            *,
+            transport: 'SwapServerTransport',
             lightning_amount_sat: int,
             expected_onchain_amount_sat: int,
             channels: Optional[Sequence['Channel']] = None,
@@ -779,7 +790,9 @@ class SwapManager(Logger):
         return swap, invoice
 
     async def wait_for_htlcs_and_broadcast(
-            self, transport, *,
+            self,
+            *,
+            transport: 'SwapServerTransport',
             swap: SwapData,
             invoice: str,
             tx: Transaction,
@@ -836,7 +849,12 @@ class SwapManager(Logger):
         return tx
 
     @log_exceptions
-    async def request_swap_for_amount(self, transport, onchain_amount) -> Optional[Tuple[SwapData, str]]:
+    async def request_swap_for_amount(
+        self,
+        *,
+        transport: 'SwapServerTransport',
+        onchain_amount: int,
+    ) -> Optional[Tuple[SwapData, str]]:
         await self.is_initialized.wait()
         lightning_amount_sat = self.get_recv_amount(onchain_amount, is_reverse=False)
         if lightning_amount_sat is None:
@@ -844,7 +862,7 @@ class SwapManager(Logger):
                                   + _("min") + f": {self.get_min_amount()}\n"
                                   + _("max") + f": {self.get_provider_max_reverse_amount()}")
         swap, invoice = await self.request_normal_swap(
-            transport,
+            transport=transport,
             lightning_amount_sat=lightning_amount_sat,
             expected_onchain_amount_sat=onchain_amount)
         return swap, invoice
@@ -855,8 +873,9 @@ class SwapManager(Logger):
         await self.network.broadcast_transaction(tx)
 
     async def reverse_swap(
-            self, transport,
+            self,
             *,
+            transport: 'SwapServerTransport',
             lightning_amount_sat: int,
             expected_onchain_amount_sat: int,
             channels: Optional[Sequence['Channel']] = None,
@@ -1094,13 +1113,13 @@ class SwapManager(Logger):
                                 f"send_amount={send_amount} -> recv_amount={recv_amount} -> inverted_send_amount={inverted_send_amount}")
         # second, add on-chain claim tx fee
         if is_reverse and recv_amount is not None:
-            recv_amount -= self.get_swap_tx_fee()
+            recv_amount -= self.get_fee_for_txbatcher()
         return recv_amount
 
     def get_send_amount(self, recv_amount: Optional[int], *, is_reverse: bool) -> Optional[int]:
         # first, add on-chain claim tx fee
         if is_reverse and recv_amount is not None:
-            recv_amount += self.get_swap_tx_fee()
+            recv_amount += self.get_fee_for_txbatcher()
         # second, add percentage fee
         send_amount = self._get_send_amount(recv_amount, is_reverse=is_reverse)
         # sanity check calculation can be inverted
@@ -1419,7 +1438,7 @@ class NostrTransport(SwapServerTransport):
         self.nostr_pubkey = keypair.pubkey.hex()[2:]
         self.dm_replies = defaultdict(asyncio.Future)  # type: Dict[str, asyncio.Future]
         self.ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_path)
-        self.relay_manager = None
+        self.relay_manager = None  # type: Optional[aionostr.Manager]
         self.taskgroup = OldTaskGroup()
         self._last_swapserver_relays = self._load_last_swapserver_relays()  # type: Optional[Sequence[str]]
 
@@ -1483,7 +1502,7 @@ class NostrTransport(SwapServerTransport):
         last_swapserver_relays = self._last_swapserver_relays or []
         return list(set(our_relays + last_swapserver_relays))
 
-    def get_relay_manager(self):
+    def get_relay_manager(self) -> aionostr.Manager:
         assert get_running_loop() == get_asyncio_loop(), f"this must be run on the asyncio thread!"
         if not self.relay_manager:
             if self.uses_proxy:

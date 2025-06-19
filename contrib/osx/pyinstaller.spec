@@ -1,8 +1,13 @@
 # -*- mode: python -*-
+import sys
+import os
+from typing import TYPE_CHECKING
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_dynamic_libs, copy_metadata
 
-import sys, os
+if TYPE_CHECKING:
+    from PyInstaller.building.build_main import Analysis, PYZ, EXE, BUNDLE
+
 
 PACKAGE_NAME='Electrum-GRS.app'
 PYPKG='electrum_grs'
@@ -51,6 +56,28 @@ datas += collect_data_files('bitbox02')
 # some deps rely on importlib metadata
 datas += copy_metadata('slip10')  # from trezor->slip10
 
+# Exclude parts of Qt that we never use. Reduces binary size by tens of MBs. see #4815
+excludes = [
+    "PyQt6.QtBluetooth",
+    "PyQt6.QtDesigner",
+    "PyQt6.QtNfc",
+    "PyQt6.QtPositioning",
+    "PyQt6.QtQml",
+    "PyQt6.QtQuick",
+    "PyQt6.QtQuick3D",
+    "PyQt6.QtQuickWidgets",
+    "PyQt6.QtRemoteObjects",
+    "PyQt6.QtSensors",
+    "PyQt6.QtSerialPort",
+    "PyQt6.QtSpatialAudio",
+    "PyQt6.QtSql",
+    "PyQt6.QtTest",
+    "PyQt6.QtTextToSpeech",
+    "PyQt6.QtWebChannel",
+    "PyQt6.QtWebSockets",
+    "PyQt6.QtXml",
+    # "PyQt6.QtNetwork",  # needed by QtMultimedia. kinda weird but ok.
+]
 
 # We don't put these files in to actually include them in the script but to make the Analysis method scan them for imports
 a = Analysis([f"{PROJECT_ROOT}/{MAIN_SCRIPT}",
@@ -67,7 +94,9 @@ a = Analysis([f"{PROJECT_ROOT}/{MAIN_SCRIPT}",
              binaries=binaries,
              datas=datas,
              hiddenimports=hiddenimports,
-             hookspath=[])
+             hookspath=[],
+             excludes=excludes,
+             )
 
 
 # http://stackoverflow.com/questions/19055089/pyinstaller-onefile-warning-pyconfig-h-when-importing-scipy-or-scipy-signal
@@ -76,36 +105,6 @@ for d in a.datas:
         a.datas.remove(d)
         break
 
-# Strip out parts of Qt that we never use. Reduces binary size by tens of MBs. see #4815
-qt_bins2remove=(
-    'pyqt6/qt6/qml',
-    'pyqt6/qt6/lib/qtqml',
-    'pyqt6/qt6/lib/qtquick',
-    'pyqt6/qt6/lib/qtshadertools',
-    'pyqt6/qt6/lib/qtspatialaudio',
-    'pyqt6/qt6/lib/qtmultimediaquick',
-    'pyqt6/qt6/lib/qtweb',
-    'pyqt6/qt6/lib/qtpositioning',
-    'pyqt6/qt6/lib/qtsensors',
-    'pyqt6/qt6/lib/qtpdfquick',
-    'pyqt6/qt6/lib/qttest',
-)
-print("Removing Qt binaries:", *qt_bins2remove)
-for x in a.binaries.copy():
-    for r in qt_bins2remove:
-        if x[0].lower().startswith(r):
-            a.binaries.remove(x)
-            print('----> Removed x =', x)
-
-qt_data2remove=(
-    'pyqt6/qt6/qml',
-)
-print("Removing Qt datas:", *qt_data2remove)
-for x in a.datas.copy():
-    for r in qt_data2remove:
-        if x[0].lower().startswith(r):
-            a.datas.remove(x)
-            print('----> Removed x =', x)
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 

@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 _logger = get_logger(__name__)
 
 HEADER_SIZE = 80  # bytes
+CHUNK_SIZE = 2016  # num headers in a difficulty retarget period
 
 # see https://github.com/Groestlcoin/groestlcoin/blob/6f3eed033c05664b760081f24222aab16860704b/src/groestlcoin.cpp#L321
 MAX_TARGET = 0x00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  # compact: 0x1e0fffff
@@ -177,7 +178,7 @@ _CHAINWORK_CACHE = {
 def init_headers_file_for_best_chain():
     b = get_best_chain()
     filename = b.path()
-    length = HEADER_SIZE * len(constants.net.CHECKPOINTS) * 2016
+    length = HEADER_SIZE * len(constants.net.CHECKPOINTS) * CHUNK_SIZE
     if not os.path.exists(filename) or os.path.getsize(filename) < length:
         with open(filename, 'wb') as f:
             if length > 0:
@@ -313,8 +314,8 @@ class Blockchain(Logger):
         if prev_hash != header.get('prev_block_hash'):
             raise InvalidHeader("prev hash mismatch: %s vs %s" % (prev_hash, header.get('prev_block_hash')))
         # DGWv3 PastBlocksMax = 24 Because checkpoint don't have preblock data.
-        if height // 2016 < len(constants.net.CHECKPOINTS) and height % 2016 != 2015 or \
-                height >= len(constants.net.CHECKPOINTS)*2016 and height <= len(constants.net.CHECKPOINTS)*2016 + 24:
+        if height // CHUNK_SIZE < len(constants.net.CHECKPOINTS) and height % CHUNK_SIZE != 2015 or \
+                height >= len(constants.net.CHECKPOINTS)*CHUNK_SIZE and height <= len(constants.net.CHECKPOINTS)*CHUNK_SIZE + 24:
             return
         if constants.net.TESTNET or not USE_DIFF_RETARGET or height < DGW3_START_HEIGHT:
             return
@@ -328,7 +329,7 @@ class Blockchain(Logger):
 
     def verify_chunk(self, index: int, data: bytes) -> None:
         num = len(data) // HEADER_SIZE
-        start_height = index * 2016
+        start_height = index * CHUNK_SIZE
         prev_hash = self.get_hash(start_height - 1)
         headers = {}
         for i in range(num):
@@ -367,7 +368,7 @@ class Blockchain(Logger):
             main_chain.save_chunk(index, chunk)
             return
 
-        delta_height = (index * 2016 - self.forkpoint)
+        delta_height = (index * CHUNK_SIZE - self.forkpoint)
         delta_bytes = delta_height * HEADER_SIZE
         # if this chunk contains our forkpoint, only save the part after forkpoint
         # (the part before is the responsibility of the parent)
@@ -453,7 +454,7 @@ class Blockchain(Logger):
             raise FileNotFoundError('Cannot find headers file but headers_dir is there. Should be at {}'.format(path))
 
     @with_lock
-    def write(self, data: bytes, offset: int, truncate: bool=True) -> None:
+    def write(self, data: bytes, offset: int, truncate: bool = True, *, fsync: bool = True) -> None:
         filename = self.path()
         self.assert_headers_file_available(filename)
         with open(filename, 'rb+') as f:
@@ -462,8 +463,9 @@ class Blockchain(Logger):
                 f.truncate()
             f.seek(offset)
             f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
+            if fsync:
+                f.flush()
+                os.fsync(f.fileno())
         self.update_size()
 
     @with_lock
@@ -473,7 +475,8 @@ class Blockchain(Logger):
         # headers are only _appended_ to the end:
         assert delta == self.size(), (delta, self.size())
         assert len(data) == HEADER_SIZE
-        self.write(data, delta*HEADER_SIZE)
+        # note: we don't fsync, to improve perf. losing headers at end of file is ok.
+        self.write(data, delta*HEADER_SIZE, fsync=False)
         self.swap_with_parent()
 
     @with_lock
@@ -518,7 +521,7 @@ class Blockchain(Logger):
     def get_hash(self, height: int) -> str:
         def is_height_checkpoint():
             within_cp_range = height <= constants.net.max_checkpoint()
-            at_chunk_boundary = (height+1) % 2016 == 0
+            at_chunk_boundary = (height+1) % CHUNK_SIZE == 0
             return within_cp_range and at_chunk_boundary
 
         if height == -1:
@@ -526,7 +529,7 @@ class Blockchain(Logger):
         elif height == 0:
             return constants.net.GENESIS
         elif is_height_checkpoint():
-            index = height // 2016
+            index = height // CHUNK_SIZE
             h, t = self.checkpoints[index]
             return h
         else:
@@ -534,6 +537,31 @@ class Blockchain(Logger):
             if header is None:
                 raise MissingHeader(height)
             return hash_header(header)
+
+    def get_target(self, index: int) -> int:
+        # compute target from chunk x, used in chunk x+1
+        if constants.net.TESTNET:
+            return 0
+        if index == -1:
+            return MAX_TARGET
+        if index < len(self.checkpoints):
+            h, t = self.checkpoints[index]
+            return t
+        # new target
+        first = self.read_header(index * CHUNK_SIZE)
+        last = self.read_header((index+1) * CHUNK_SIZE - 1)
+        if not first or not last:
+            raise MissingHeader()
+        bits = last.get('bits')
+        target = self.bits_to_target(bits)
+        nActualTimespan = last.get('timestamp') - first.get('timestamp')
+        nTargetTimespan = 14 * 24 * 60 * 60
+        nActualTimespan = max(nActualTimespan, nTargetTimespan // 4)
+        nActualTimespan = min(nActualTimespan, nTargetTimespan * 4)
+        new_target = min(MAX_TARGET, (target * nActualTimespan) // nTargetTimespan)
+        # not any target can be represented in 32 bits:
+        new_target = self.bits_to_target(self.target_to_bits(new_target))
+        return new_target
 
     @classmethod
     def bits_to_target(cls, bits: int) -> int:
@@ -582,7 +610,7 @@ class Blockchain(Logger):
         if last is None:
             last = self.read_header(height - 1)
             if last is None:
-                if not (height >= len(constants.net.CHECKPOINTS)*2016 and height <= len(constants.net.CHECKPOINTS)*2016 + 24):
+                if not (height >= len(constants.net.CHECKPOINTS)*CHUNK_SIZE and height <= len(constants.net.CHECKPOINTS)*CHUNK_SIZE + 24):
                     raise MissingHeader
 
         # params
@@ -599,7 +627,7 @@ class Blockchain(Logger):
         bnNum = 0
 
         #DGWv3 PastBlocksMax = 24 Because checkpoint don't have preblock data.
-        if height < len(constants.net.CHECKPOINTS)*2016 + PastBlocksMax:
+        if height < len(constants.net.CHECKPOINTS)*CHUNK_SIZE + PastBlocksMax:
             return 0
         if BlockLastSolved is None or height-1 < DGW3_START_HEIGHT:
             return MAX_TARGET
@@ -641,17 +669,17 @@ class Blockchain(Logger):
         #Enforce DGW3_START_HEIGHT.
         if not USE_DIFF_RETARGET or height < DGW3_START_HEIGHT:
             return 0
-        elif height // 2016 < len(constants.net.CHECKPOINTS) and height % 2016 == 2015:
-            h, t = constants.net.CHECKPOINTS[height // 2016]
+        elif height // CHUNK_SIZE < len(constants.net.CHECKPOINTS) and height % CHUNK_SIZE == 2015:
+            h, t = constants.net.CHECKPOINTS[height // CHUNK_SIZE]
             return t
-        elif height // 2016 < len(constants.net.CHECKPOINTS) and height % 2016 != 2015:
+        elif height // CHUNK_SIZE < len(constants.net.CHECKPOINTS) and height % CHUNK_SIZE != 2015:
             return 0
         else:
             return self.get_target_dgw3(height, chain)
 
     def chainwork_of_header_at_height(self, height: int) -> int:
         """work done by single header at given height"""
-        chunk_idx = height // 2016 - 1
+        chunk_idx = height // CHUNK_SIZE - 1
         target = self.get_target(chunk_idx)
         work = ((2 ** 256 - target - 1) // (target + 1)) + 1
         return work
@@ -664,26 +692,26 @@ class Blockchain(Logger):
             # On testnet/regtest, difficulty works somewhat different.
             # It's out of scope to properly implement that.
             return height
-        last_retarget = height // 2016 * 2016 - 1
+        last_retarget = height // CHUNK_SIZE * CHUNK_SIZE - 1
         cached_height = last_retarget
         while _CHAINWORK_CACHE.get(self.get_hash(cached_height)) is None:
             if cached_height <= -1:
                 break
-            cached_height -= 2016
+            cached_height -= CHUNK_SIZE
         assert cached_height >= -1, cached_height
         running_total = _CHAINWORK_CACHE[self.get_hash(cached_height)]
         while cached_height < last_retarget:
-            cached_height += 2016
+            cached_height += CHUNK_SIZE
             work_in_single_header = self.chainwork_of_header_at_height(cached_height)
-            work_in_chunk = 2016 * work_in_single_header
+            work_in_chunk = CHUNK_SIZE * work_in_single_header
             running_total += work_in_chunk
             _CHAINWORK_CACHE[self.get_hash(cached_height)] = running_total
-        cached_height += 2016
+        cached_height += CHUNK_SIZE
         work_in_single_header = self.chainwork_of_header_at_height(cached_height)
-        work_in_last_partial_chunk = (height % 2016 + 1) * work_in_single_header
+        work_in_last_partial_chunk = (height % CHUNK_SIZE + 1) * work_in_single_header
         return running_total + work_in_last_partial_chunk
 
-    def can_connect(self, header: dict, check_height: bool=True) -> bool:
+    def can_connect(self, header: dict, *, check_height: bool = True) -> bool:
         if header is None:
             return False
         height = header['block_height']
@@ -709,10 +737,9 @@ class Blockchain(Logger):
             return False
         return True
 
-    def connect_chunk(self, idx: int, hexdata: str) -> bool:
+    def connect_chunk(self, idx: int, data: bytes) -> bool:
         assert idx >= 0, idx
         try:
-            data = bfh(hexdata)
             self.verify_chunk(idx, data)
             self.save_chunk(idx, data)
             return True
@@ -723,10 +750,10 @@ class Blockchain(Logger):
     def get_checkpoints(self):
         # for each chunk, store the hash of the last block and the target after the chunk
         cp = []
-        n = self.height() // 2016
+        n = self.height() // CHUNK_SIZE
         for index in range(n):
-            h = self.get_hash((index+1) * 2016 -1)
-            target = self.get_target((index+1) * 2016 -1)
+            h = self.get_hash((index+1) * CHUNK_SIZE -1)
+            target = self.get_target((index+1) * CHUNK_SIZE -1)
             cp.append((h, target))
         return cp
 

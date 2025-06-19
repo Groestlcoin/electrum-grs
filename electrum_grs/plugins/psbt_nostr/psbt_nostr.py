@@ -90,7 +90,6 @@ class CosignerWallet(Logger):
         self.config = self.wallet.config
 
         self.pending = asyncio.Event()
-        self.wallet_uptodate = asyncio.Event()
 
         self.known_events = db_storage.setdefault('cosigner_events', {})
 
@@ -104,7 +103,9 @@ class CosignerWallet(Logger):
         self.cosigner_list = []  # type: List[Tuple[str, str]]
         self.nostr_pubkey = None
 
-        for key, keystore in wallet.keystores.items():
+        for keystore in wallet.get_keystores():
+            # note: there should be domain separation between testnet/mainnet.
+            #       Currently there is, due to the xpub str encoding it in its header.
             xpub = keystore.get_master_public_key()  # type: str
             privkey = sha256('nostr_psbt:' + xpub)
             pubkey = ecc.ECPrivkey(privkey).get_public_key_bytes()[1:]
@@ -121,12 +122,6 @@ class CosignerWallet(Logger):
             asyncio.run_coroutine_threadsafe(self.main_loop(), self.network.asyncio_loop)
 
     @event_listener
-    def on_event_wallet_updated(self, wallet):
-        if self.wallet == wallet and wallet.is_up_to_date() and not self.wallet_uptodate.is_set():
-            self.logger.debug('starting handling of PSBTs')
-            self.wallet_uptodate.set()
-
-    @event_listener
     async def on_event_proxy_set(self, *args):
         if not (self.network and self.nostr_pubkey):
             return
@@ -138,7 +133,10 @@ class CosignerWallet(Logger):
     async def main_loop(self):
         self.logger.info("starting taskgroup.")
         try:
-            await self.wallet_uptodate.wait()  # start processing PSBTs only after wallet is_up_to_date
+            # start processing PSBTs only after wallet is_up_to_date
+            while not self.wallet.is_up_to_date():
+                await self.wallet.up_to_date_changed_event.wait()
+            self.logger.debug('starting handling of PSBTs')
             async with self.taskgroup as group:
                 await group.spawn(self.check_direct_messages())
         except Exception as e:
@@ -195,7 +193,7 @@ class CosignerWallet(Logger):
                 if event.id in self.known_events:
                     self.logger.info(f'known event {event.id} {util.age(event.created_at)}')
                     continue
-                if not any(event.pubkey == pubkey for _, pubkey in self.cosigner_list):
+                if not any(event.pubkey == pubkey for _xpub, pubkey in self.cosigner_list):
                     self.logger.warning(f"got event from unknown author: {event.pubkey}")
                     continue
                 if event.created_at > now() + self.KEEP_DELAY:
