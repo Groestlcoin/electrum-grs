@@ -4,8 +4,10 @@ base58==2.1.1 \
 bitbox02==6.3.0 \
     --hash=sha256:36c9d34b78f040291e7ade54dc8f1990e69d9169b3fb2456a4c7e434475b1d21 \
     --hash=sha256:d03fb2228be5630f1d7c351e5bebdcb9a95bbe62ecf88c92913a661f093699e3
-btchip-python==0.1.32 \
-    --hash=sha256:34f5e0c161c08f65dc0d070ba2ff4c315ed21c4b7e0faa32a46862d0dc1b8f55
+# btchip-python 0.1.32 with a patch to fix a malformed dependency
+# See https://github.com/LedgerHQ/btchip-python/pull/54
+https://github.com/EchterAgo/btchip-python/archive/f65cca5dea1cae6031accc961b5754d02c52a106.tar.gz \
+    --hash=sha256:586f8ea4d48287c4b744b47dee031dbdaa3a7a2483ba49d3e87efc340177f52d
 cbor2==5.6.5 \
     --hash=sha256:3038523b8fc7de312bb9cdcbbbd599987e64307c4db357cd2030c472a6c7d468 \
     --hash=sha256:34cf5ab0dc310c3d0196caa6ae062dc09f6c242e2544bea01691fe60c0230596 \

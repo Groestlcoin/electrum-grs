@@ -14,8 +14,7 @@ hidapi>=0.7.99.post15
 libusb1>=1.6
 
 # device plugin: ledger
-# note: btchip-python only needed for "legacy" protocol and HW.1 support
-btchip-python>=0.1.32
+btchip-python @ https://github.com/EchterAgo/btchip-python/archive/f65cca5dea1cae6031accc961b5754d02c52a106.tar.gz
 ledger-bitcoin>=0.2.0
 hidapi
 
