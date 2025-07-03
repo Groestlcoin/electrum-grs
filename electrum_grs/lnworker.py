@@ -1211,6 +1211,7 @@ class LNWallet(LNWorker):
         for chan in self.channel_backups.values():
             if chan.funding_outpoint.to_str() == txo:
                 return chan
+        return None
 
     async def handle_onchain_state(self, chan: Channel):
         if self.network is None:
@@ -1511,6 +1512,7 @@ class LNWallet(LNWorker):
                 return chan
             if chan.get_local_scid_alias() == short_channel_id:
                 return chan
+        return None
 
     def can_pay_invoice(self, invoice: Invoice) -> bool:
         assert invoice.is_lightning()
@@ -2715,7 +2717,7 @@ class LNWallet(LNWorker):
         with self.lock:
             self.payment_info.pop(payment_hash_hex, None)
 
-    def get_balance(self, frozen=False):
+    def get_balance(self, *, frozen=False) -> Decimal:
         with self.lock:
             return Decimal(sum(
                 chan.balance(LOCAL) if not chan.is_closed() and (chan.is_frozen_for_sending() if frozen else True) else 0
@@ -3070,17 +3072,14 @@ class LNWallet(LNWorker):
                     await self.taskgroup.spawn(self.reestablish_peer_for_given_channel(chan))
 
     def current_target_feerate_per_kw(self, *, has_anchors: bool) -> Optional[int]:
-        if self.network.fee_estimates.has_data():
-            target: int = FEE_LN_MINIMUM_ETA_TARGET if has_anchors else FEE_LN_ETA_TARGET
-            feerate_per_kvbyte = self.network.fee_estimates.eta_target_to_fee(target)
-            if has_anchors:
-                # set a floor of 5 sat/vb to have some safety margin in case the mempool
-                # grows quickly
-                feerate_per_kvbyte = max(feerate_per_kvbyte, 5000)
-        else:
-            if constants.net is not constants.BitcoinRegtest:
-                return None
-            feerate_per_kvbyte = FEERATE_FALLBACK_STATIC_FEE
+        target: int = FEE_LN_MINIMUM_ETA_TARGET if has_anchors else FEE_LN_ETA_TARGET
+        feerate_per_kvbyte = self.network.fee_estimates.eta_target_to_fee(target)
+        if feerate_per_kvbyte is None:
+            return None
+        if has_anchors:
+            # set a floor of 5 sat/vb to have some safety margin in case the mempool
+            # grows quickly
+            feerate_per_kvbyte = max(feerate_per_kvbyte, 5000)
         return max(FEERATE_PER_KW_MIN_RELAY_LIGHTNING, feerate_per_kvbyte // 4)
 
     def current_low_feerate_per_kw_srk_channel(self) -> Optional[int]:
@@ -3088,9 +3087,9 @@ class LNWallet(LNWorker):
         if constants.net is constants.BitcoinRegtest:
             feerate_per_kvbyte = 0
         else:
-            if not self.network.fee_estimates.has_data():
+            feerate_per_kvbyte = self.network.fee_estimates.eta_target_to_fee(FEE_LN_LOW_ETA_TARGET)
+            if feerate_per_kvbyte is None:
                 return None
-            feerate_per_kvbyte = self.network.fee_estimates.eta_target_to_fee(FEE_LN_LOW_ETA_TARGET) or 0
         low_feerate_per_kw = max(FEERATE_PER_KW_MIN_RELAY_LIGHTNING, feerate_per_kvbyte // 4)
         # make sure this is never higher than the target feerate:
         current_target_feerate = self.current_target_feerate_per_kw(has_anchors=False)

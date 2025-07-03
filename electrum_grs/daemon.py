@@ -111,12 +111,13 @@ def get_file_descriptor(config: SimpleConfig):
 
 def request(config: SimpleConfig, endpoint, args=(), timeout: Union[float, int] = 60):
     lockfile = get_lockfile(config)
-    while True:
-        create_time = None
+    for attempt in range(5):
+        create_time = None  # type: Optional[float | int]
         path = None
         try:
             with open(lockfile) as f:
                 socktype, address, create_time = ast.literal_eval(f.read())
+                int(create_time)  # raise if not numeric
                 if socktype == 'unix':
                     path = address
                     (host, port) = "127.0.0.1", 0
@@ -150,10 +151,17 @@ def request(config: SimpleConfig, endpoint, args=(), timeout: Union[float, int] 
             return fut.result(timeout=timeout)
         except aiohttp.client_exceptions.ClientConnectorError as e:
             _logger.info(f"failed to connect to JSON-RPC server {e}")
-            if not create_time or create_time < time.time() - 1.0:
+            # We cannot communicate with the daemon.
+            # If daemon's creation time is very recent, it might still be starting up.
+            # In any other case, we raise: - too old create_time means daemon is likely dead,
+            #                              - create_time in future means our clock cannot be trusted.
+            if not (create_time <= time.time() <= create_time + 1.0):
                 raise DaemonNotRunning()
-        # Sleep a bit and try again; it might have just been started
+        # Sleep a bit and try again; daemon might have just been started
         time.sleep(1.0)
+    # how did we even get here?! the clock must be going haywire.
+    _logger.error(f"Failed to connect to JSON-RPC server. Exhausted all attempts.")
+    raise DaemonNotRunning()
 
 
 def wait_until_daemon_becomes_ready(*, config: SimpleConfig, timeout=5) -> bool:
@@ -395,9 +403,6 @@ class Daemon(Logger):
             fd = get_file_descriptor(config)
             if fd is None:
                 raise Exception('failed to lock daemon; already running?')
-        if 'wallet_path' in config.cmdline_options:
-            self.logger.warning("Ignoring parameter 'wallet_path' for daemon. "
-                                "Use the load_wallet command instead.")
         self._plugins = None  # type: Optional[Plugins]
         self.asyncio_loop = util.get_asyncio_loop()
         if not self.config.NETWORK_OFFLINE:
@@ -562,6 +567,9 @@ class Daemon(Logger):
         return True
 
     def run_daemon(self):
+        if 'wallet_path' in self.config.cmdline_options:
+            self.logger.warning("Ignoring parameter 'wallet_path' for daemon. "
+                                "Use the load_wallet command instead.")
         # init plugins
         self._plugins = Plugins(self.config, 'cmdline')
         # block until we are stopping
