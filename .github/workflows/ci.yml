@@ -10,7 +10,7 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: 3.11.9
+          python-version: 3.12.10
       - name: Builder image
         env:
           TARGET_OS: Windows
@@ -38,7 +38,7 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: 3.11.9
+          python-version: 3.12.10
       - name: Builder image
         run: docker build -t electrum-grs-appimage-builder-img ./contrib/build-linux/appimage/
       - name: Compile Linux AppImage
@@ -231,7 +231,7 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: 3.11.9
+          python-version: 3.12.10
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: 14.1.0
