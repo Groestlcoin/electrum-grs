@@ -5,11 +5,12 @@
 from typing import TYPE_CHECKING, Optional
 
 from . import util
-from .util import TxMinedInfo, BelowDustLimit
+from .util import TxMinedInfo, BelowDustLimit, NoDynamicFeeEstimates
 from .util import EventListener, event_listener, log_exceptions, ignore_exceptions
 from .transaction import Transaction, TxOutpoint
 from .logging import Logger
 from .address_synchronizer import TX_HEIGHT_LOCAL
+from .lnutil import REDEEM_AFTER_DOUBLE_SPENT_DELAY
 
 
 if TYPE_CHECKING:
@@ -45,8 +46,9 @@ class LNWatcher(Logger, EventListener):
     def remove_callback(self, address):
         self.callbacks.pop(address, None)
 
-    def add_callback(self, address, callback):
-        self.adb.add_address(address)
+    def add_callback(self, address, callback, *, subscribe=True):
+        if subscribe:
+            self.adb.add_address(address)
         self.callbacks[address] = callback
 
     async def trigger_callbacks(self, *, requires_synchronizer=True):
@@ -85,12 +87,7 @@ class LNWatcher(Logger, EventListener):
         outpoint = chan.funding_outpoint.to_str()
         address = chan.get_funding_address()
         callback = lambda: self.check_onchain_situation(address, outpoint)
-        if chan.need_to_subscribe():
-            self.add_callback(address, callback)
-
-    def unwatch_channel(self, address: str, funding_outpoint: str) -> None:
-        self.logger.info(f'unwatching {funding_outpoint}')
-        self.remove_callback(address)
+        self.add_callback(address, callback, subscribe=chan.need_to_subscribe())
 
     @ignore_exceptions
     @log_exceptions
@@ -99,6 +96,7 @@ class LNWatcher(Logger, EventListener):
         if not self.adb.is_mine(address):
             return
         # inspect_tx_candidate might have added new addresses, in which case we return early
+        # note: maybe we should wait until adb.is_up_to_date... (?)
         funding_txid = funding_outpoint.split(':')[0]
         funding_height = self.adb.get_tx_height(funding_txid)
         closing_txid = self.adb.get_spender(funding_outpoint)
@@ -119,8 +117,6 @@ class LNWatcher(Logger, EventListener):
             closing_txid=closing_txid,
             closing_height=closing_height,
             keep_watching=keep_watching)
-        if not keep_watching:
-            self.unwatch_channel(address, funding_outpoint)
 
     def diagnostic_name(self):
         return f"{self.lnworker.wallet.diagnostic_name()}-LNW"
@@ -159,7 +155,9 @@ class LNWatcher(Logger, EventListener):
             return False
         # detect who closed and get information about how to claim outputs
         is_local_ctx, sweep_info_dict = chan.get_ctx_sweep_info(closing_tx)
-        keep_watching = False if sweep_info_dict else not self.adb.is_deeply_mined(closing_tx.txid())
+        # note: we need to keep watching *at least* until the closing tx is deeply mined,
+        #       possibly longer if there are TXOs to sweep
+        keep_watching = not self.adb.is_deeply_mined(closing_tx.txid())
         # create and broadcast transactions
         for prevout, sweep_info in sweep_info_dict.items():
             prev_txid, prev_index = prevout.split(':')
@@ -169,38 +167,48 @@ class LNWatcher(Logger, EventListener):
                 # do not keep watching if prevout does not exist
                 self.logger.info(f'prevout does not exist for {name}: {prevout}')
                 continue
-            was_added = self.maybe_redeem(sweep_info)
-            spender_txid = self.adb.get_spender(prevout)
+            watch_sweep_info = self.maybe_redeem(sweep_info)
+            spender_txid = self.adb.get_spender(prevout)  # note: LOCAL spenders don't count
             spender_tx = self.adb.get_transaction(spender_txid) if spender_txid else None
             if spender_tx:
                 # the spender might be the remote, revoked or not
                 htlc_sweepinfo = chan.maybe_sweep_htlcs(closing_tx, spender_tx)
                 for prevout2, htlc_sweep_info in htlc_sweepinfo.items():
-                    htlc_was_added = self.maybe_redeem(htlc_sweep_info)
+                    watch_htlc_sweep_info = self.maybe_redeem(htlc_sweep_info)
                     htlc_tx_spender = self.adb.get_spender(prevout2)
                     self.lnworker.wallet.set_default_label(prevout2, htlc_sweep_info.name)
                     if htlc_tx_spender:
                         keep_watching |= not self.adb.is_deeply_mined(htlc_tx_spender)
                         self.maybe_add_accounting_address(htlc_tx_spender, htlc_sweep_info)
                     else:
-                        keep_watching |= htlc_was_added
+                        keep_watching |= watch_htlc_sweep_info
                 keep_watching |= not self.adb.is_deeply_mined(spender_txid)
                 self.maybe_extract_preimage(chan, spender_tx, prevout)
                 self.maybe_add_accounting_address(spender_txid, sweep_info)
             else:
-                keep_watching |= was_added
+                keep_watching |= watch_sweep_info
             self.maybe_add_pending_forceclose(
-                chan=chan, spender_txid=spender_txid, is_local_ctx=is_local_ctx, sweep_info=sweep_info, was_added=was_added)
+                chan=chan,
+                spender_txid=spender_txid,
+                is_local_ctx=is_local_ctx,
+                sweep_info=sweep_info,
+            )
         return keep_watching
 
     def get_pending_force_closes(self):
         return self._pending_force_closes
 
     def maybe_redeem(self, sweep_info: 'SweepInfo') -> bool:
-        """ returns False if it was dust """
+        """ returns 'keep_watching' """
         try:
             self.lnworker.wallet.txbatcher.add_sweep_input('lnwatcher', sweep_info)
         except BelowDustLimit:
+            # utxo is considered dust at *current* fee estimates.
+            # but maybe the fees atm are very high? We will retry later.
+            pass
+        except NoDynamicFeeEstimates:
+            pass  # will retry later
+        if sweep_info.is_anchor():
             return False
         return True
 
@@ -251,10 +259,18 @@ class LNWatcher(Logger, EventListener):
         spender_txid: Optional[str],
         is_local_ctx: bool,
         sweep_info: 'SweepInfo',
-        was_added: bool,
-    ):
-        """ we are waiting for ctx to be confirmed and there are received htlcs """
-        if was_added and is_local_ctx and sweep_info.name == 'received-htlc' and chan.has_anchors():
+    ) -> None:
+        """Adds chan into set of ongoing force-closures if the user should keep the wallet open, waiting for it.
+        (we are waiting for ctx to be confirmed and there are received htlcs)
+        """
+        if is_local_ctx and sweep_info.name == 'received-htlc':
+            cltv = sweep_info.cltv_abs
+            assert cltv is not None, f"missing cltv for {sweep_info}"
+            if self.adb.get_local_height() > cltv + REDEEM_AFTER_DOUBLE_SPENT_DELAY:
+                # We had plenty of time to sweep. The remote also had time to time out the htlc.
+                # Maybe its value has been ~dust at current and past fee levels (every time we checked).
+                # We should not keep warning the user forever.
+                return
             tx_mined_status = self.adb.get_tx_height(spender_txid)
             if tx_mined_status.height == TX_HEIGHT_LOCAL:
                 self._pending_force_closes.add(chan)
