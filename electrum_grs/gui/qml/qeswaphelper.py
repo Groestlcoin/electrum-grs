@@ -5,6 +5,7 @@ from typing import Union, Optional, TYPE_CHECKING, Sequence
 
 from PyQt6.QtCore import (pyqtProperty, pyqtSignal, pyqtSlot, QObject, QTimer, pyqtEnum, QAbstractListModel, Qt,
                           QModelIndex)
+from PyQt6.QtGui import QColor
 
 from electrum_grs.i18n import _
 from electrum_grs.bitcoin import DummyAddress
@@ -12,7 +13,7 @@ from electrum_grs.logging import get_logger
 from electrum_grs.transaction import PartialTxOutput, PartialTransaction
 from electrum_grs.util import (NotEnoughFunds, NoDynamicFeeEstimates, profiler, get_asyncio_loop, age,
                            wait_for2)
-from electrum_grs.submarine_swaps import NostrTransport, SwapServerTransport
+from electrum_grs.submarine_swaps import NostrTransport, SwapServerTransport, pubkey_to_rgb_color
 from electrum_grs.fee_policy import FeePolicy
 
 from electrum_grs.gui import messages
@@ -34,7 +35,7 @@ class QESwapServerNPubListModel(QAbstractListModel):
 
     # define listmodel rolemap
     _ROLE_NAMES= ('npub', 'server_pubkey', 'timestamp', 'percentage_fee', 'mining_fee',
-                  'min_amount', 'max_forward_amount', 'max_reverse_amount', 'pow_bits')
+                  'min_amount', 'max_forward_amount', 'max_reverse_amount', 'pow_bits', 'color')
     _ROLE_KEYS = range(Qt.ItemDataRole.UserRole, Qt.ItemDataRole.UserRole + len(_ROLE_NAMES))
     _ROLE_MAP  = dict(zip(_ROLE_KEYS, [bytearray(x.encode()) for x in _ROLE_NAMES]))
 
@@ -59,7 +60,7 @@ class QESwapServerNPubListModel(QAbstractListModel):
         service = self._services[index.row()]
         role_index = role - Qt.ItemDataRole.UserRole
         value = service[self._ROLE_NAMES[role_index]]
-        if isinstance(value, (bool, list, int, str)) or value is None:
+        if isinstance(value, (bool, list, int, str, QColor)) or value is None:
             return value
         return str(value)
 
@@ -79,6 +80,7 @@ class QESwapServerNPubListModel(QAbstractListModel):
             'max_reverse_amount': x.pairs.max_reverse,
             'timestamp': age(x.timestamp),
             'pow_bits': x.pow_bits,
+            'color': QColor(*pubkey_to_rgb_color(x.server_pubkey)),
         }
 
     def updateModel(self, items: Sequence['SwapOffer']):
