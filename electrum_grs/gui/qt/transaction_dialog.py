@@ -47,7 +47,8 @@ from electrum_grs.i18n import _
 from electrum_grs.plugin import run_hook
 from electrum_grs.transaction import SerializationError, Transaction, PartialTransaction, TxOutpoint, TxinDataFetchProgress
 from electrum_grs.logging import get_logger
-from electrum_grs.util import ShortID, get_asyncio_loop, UI_UNIT_NAME_TXSIZE_VBYTES, delta_time_str
+from electrum_grs.util import (ShortID, get_asyncio_loop, UI_UNIT_NAME_TXSIZE_VBYTES, delta_time_str,
+                           UserCancelled)
 from electrum_grs.network import Network
 from electrum_grs.wallet import TxSighashRiskLevel, TxSighashDanger
 
@@ -449,6 +450,8 @@ def show_transaction(
     except SerializationError as e:
         _logger.exception('unable to deserialize the transaction')
         parent.show_critical(_("Electrum-GRS was unable to deserialize the transaction:") + "\n" + str(e))
+    except UserCancelled:
+        return
     else:
         d.show()
 

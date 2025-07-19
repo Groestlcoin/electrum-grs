@@ -27,7 +27,7 @@ from decimal import Decimal
 from functools import partial
 from typing import TYPE_CHECKING, Optional, Union, Callable
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QGridLayout, QPushButton, QToolButton, QMenu, QComboBox
 
@@ -114,7 +114,11 @@ class TxEditor(WindowModalDialog):
         self.update_fee_target()
         self.resize(self.layout().sizeHint())
 
-        self.main_window.gui_object.timer.timeout.connect(self.timer_actions)
+        self.timer = QTimer(self)
+        self.timer.setInterval(500)
+        self.timer.setSingleShot(False)
+        self.timer.timeout.connect(self.timer_actions)
+        self.timer.start()
 
     def is_batching(self) -> bool:
         return self._base_tx is not None
@@ -130,16 +134,18 @@ class TxEditor(WindowModalDialog):
         self._update_widgets()
 
     def stop_editor_updates(self):
-        self.main_window.gui_object.timer.timeout.disconnect(self.timer_actions)
+        self.timer.stop()
 
     def update_tx(self, *, fallback_to_zero_fee: bool = False):
         # expected to set self.tx, self.message and self.error
         raise NotImplementedError()
 
     def update_fee_target(self):
-        text = self.fee_slider.fee_policy.get_target_text()
+        if self.fee_slider.is_active():
+            text = self.fee_policy.get_target_text()
+        else:
+            text = ""
         self.fee_target.setText(text)
-        # self.fee_target.setVisible(self.fee_slider.fee_policy.use_dynamic_estimates) # hide in static mode
 
     def update_feerate_label(self):
         self.feerate_label.setText(self.feerate_e.text() + ' ' + self.feerate_e.base_unit())
@@ -233,9 +239,6 @@ class TxEditor(WindowModalDialog):
         self.needs_update = True
 
     def fee_slider_callback(self, fee_rate):
-        if self.fee_policy.method == FeeMethod.FIXED:
-            return
-        self.config.FEE_POLICY = self.fee_policy.get_descriptor()
         self.fee_slider.activate()
         if fee_rate:
             fee_rate = Decimal(fee_rate)
@@ -286,7 +289,7 @@ class TxEditor(WindowModalDialog):
             fee_policy = FixedFeePolicy(fee_amount)
         elif self.is_send_feerate_frozen() and feerate is not None:
             feerate_per_kb = int(feerate * 1000)
-            fee_policy = FeePolicy(f'static:{feerate_per_kb}')
+            fee_policy = FeePolicy(f'feerate:{feerate_per_kb}')
         else:
             fee_policy = self.fee_slider.get_policy()
         return fee_policy
@@ -367,6 +370,7 @@ class TxEditor(WindowModalDialog):
         self.set_feerounding_visibility(abs(feerounding) >= 1)
         # feerate_label needs to be updated from feerate_e
         self.update_feerate_label()
+        self.update_fee_target()
 
     def create_buttons_bar(self):
         self.preview_button = QPushButton(_('Preview'))
@@ -617,7 +621,9 @@ class ConfirmTxDialog(TxEditor):
         self.amount_label.setText(amount_str)
 
     def update_tx(self, *, fallback_to_zero_fee: bool = False):
-        fee_policy = self.get_fee_policy()
+        self.fee_policy = fee_policy = self.get_fee_policy()
+        if fee_policy.method != FeeMethod.FIXED:
+            self.config.FEE_POLICY = fee_policy.get_descriptor()
         confirmed_only = self.config.WALLET_SPEND_CONFIRMED_ONLY
         base_tx = self._base_tx
         try:
