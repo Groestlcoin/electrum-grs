@@ -152,7 +152,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
         if hasattr(QtCore.Qt, "AA_ShareOpenGLContexts"):
             QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_ShareOpenGLContexts)
         if hasattr(QGuiApplication, 'setDesktopFileName'):
-            QGuiApplication.setDesktopFileName('electrum-grs.desktop')
+            QGuiApplication.setDesktopFileName('electrum-grs')
         QGuiApplication.setApplicationName("Electrum-GRS")
         self.gui_thread = threading.current_thread()
         self.windows = []  # type: List[ElectrumWindow]

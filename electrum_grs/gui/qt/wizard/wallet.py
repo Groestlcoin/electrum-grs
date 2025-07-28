@@ -17,7 +17,7 @@ from electrum_grs.keystore import bip44_derivation, bip39_to_seed, purpose48_der
 from electrum_grs.plugin import run_hook, HardwarePluginLibraryUnavailable
 from electrum_grs.storage import StorageReadWriteError
 from electrum_grs.util import WalletFileException, get_new_wallet_name, UserFacingException, InvalidPassword
-from electrum_grs.util import is_subpath, ChoiceItem, multisig_type
+from electrum_grs.util import is_subpath, ChoiceItem, multisig_type, UserCancelled
 from electrum_grs.wallet import wallet_types
 from .wizard import QEAbstractWizard, WizardComponent
 from electrum_grs.logging import get_logger, Logger
@@ -91,11 +91,15 @@ class QENewWalletWizard(NewWalletWizard, QEAbstractWizard, MessageBoxMixin):
         # attach gui classes to views
         self.navmap_merge({
             'wallet_name': {'gui': WCWalletName},
+            'hw_unlock': {'gui': WCChooseHWDevice},
             'wallet_type': {'gui': WCWalletType},
             'keystore_type': {'gui': WCKeystoreType},
             'create_seed': {'gui': WCCreateSeed},
+            'create_ext': {'gui': WCEnterExt},
             'confirm_seed': {'gui': WCConfirmSeed},
+            'confirm_ext': {'gui': WCConfirmExt},
             'have_seed': {'gui': WCHaveSeed},
+            'have_ext': {'gui': WCEnterExt},
             'choose_hardware_device': {'gui': WCChooseHWDevice},
             'script_and_derivation': {'gui': WCScriptAndDerivation},
             'have_master_key': {'gui': WCHaveMasterKey},
@@ -103,6 +107,7 @@ class QENewWalletWizard(NewWalletWizard, QEAbstractWizard, MessageBoxMixin):
             'multisig_cosigner_keystore': {'gui': WCCosignerKeystore},
             'multisig_cosigner_key': {'gui': WCHaveMasterKey},
             'multisig_cosigner_seed': {'gui': WCHaveSeed},
+            'multisig_cosigner_have_ext': {'gui': WCEnterExt},
             'multisig_cosigner_hardware': {'gui': WCChooseHWDevice},
             'multisig_cosigner_script_and_derivation': {'gui': WCScriptAndDerivation},
             'imported': {'gui': WCImport},
@@ -110,56 +115,11 @@ class QENewWalletWizard(NewWalletWizard, QEAbstractWizard, MessageBoxMixin):
             'wallet_password_hardware': {'gui': WCWalletPasswordHardware}
         })
 
-        # add open existing wallet from wizard, incl hw unlock
+        # add open existing wallet from wizard
         self.navmap_merge({
             'wallet_name': {
                 'next': lambda d: 'hw_unlock' if d['wallet_needs_hw_unlock'] else 'wallet_type',
                 'last': lambda d: d['wallet_exists'] and not d['wallet_needs_hw_unlock']
-            },
-            'hw_unlock': {
-                'gui': WCChooseHWDevice,
-                'next': lambda d: self.on_hardware_device(d, new_wallet=False)
-            }
-        })
-
-        # insert seed extension entry/confirm as separate views
-        self.navmap_merge({
-            'create_seed': {
-                'next': lambda d: 'create_ext' if self.wants_ext(d) else 'confirm_seed'
-            },
-            'create_ext': {
-                'next': 'confirm_seed',
-                'gui': WCEnterExt
-            },
-            'confirm_seed': {
-                'next': lambda d: 'confirm_ext' if self.wants_ext(d) else self.on_have_or_confirm_seed(d),
-                'accept': lambda d: None if self.wants_ext(d) else self.maybe_master_pubkey(d)
-            },
-            'confirm_ext': {
-                'next': self.on_have_or_confirm_seed,
-                'accept': self.maybe_master_pubkey,
-                'gui': WCConfirmExt
-            },
-            'have_seed': {
-                'next': lambda d: 'have_ext' if self.wants_ext(d) else self.on_have_or_confirm_seed(d),
-                'accept': lambda d: None if self.wants_ext(d) else self.maybe_master_pubkey(d),
-                'last': lambda d: self.is_single_password() and not
-                                  (self.needs_derivation_path(d) or self.is_multisig(d) or self.wants_ext(d))
-            },
-            'have_ext': {
-                'next': self.on_have_or_confirm_seed,
-                'accept': self.maybe_master_pubkey,
-                'gui': WCEnterExt
-            },
-            'multisig_cosigner_seed': {
-                'next': lambda d: 'multisig_cosigner_have_ext' if self.wants_ext(d) else self.on_have_cosigner_seed(d),
-                'last': lambda d: self.is_single_password() and self.last_cosigner(d) and not
-                                  (self.needs_derivation_path(d) or self.wants_ext(d))
-            },
-            'multisig_cosigner_have_ext': {
-                'next': self.on_have_cosigner_seed,
-                'last': lambda d: self.is_single_password() and self.last_cosigner(d) and not self.needs_derivation_path(d),
-                'gui': WCEnterExt
             },
         })
 
@@ -1370,6 +1330,8 @@ class WCHWUnlock(WalletWizardComponent, Logger):
         def unlock_task(client):
             try:
                 self.password = client.get_password_for_storage_encryption()
+            except UserCancelled as e:
+                self.error = repr(e)
             except Exception as e:
                 self.error = repr(e)  # TODO: handle user interaction exceptions (e.g. invalid pin) more gracefully
                 self.logger.exception(repr(e))
@@ -1463,7 +1425,7 @@ class WCHWXPub(WalletWizardComponent, Logger):
             except Exception as e:
                 self.error = repr(e)  # TODO: handle user interaction exceptions (e.g. invalid pin) more gracefully
                 self.logger.exception(repr(e))
-            self.logger.debug(f'Done retrieve xpub: {self.xpub}')
+            self.logger.debug(f'Done retrieve xpub: {self.xpub[:10]}...{self.xpub[-5:]}')
             self.busy = False
             self.validate()
 
