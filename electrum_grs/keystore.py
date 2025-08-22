@@ -640,7 +640,11 @@ class BIP32_KeyStore(Xpub, Deterministic_KeyStore):
         self.xprv = d.get('xprv')
 
     def watching_only_keystore(self):
-        return BIP32_KeyStore({'xpub':self.xpub})
+        return BIP32_KeyStore({
+            'xpub': self.xpub,
+            'root_fingerprint': self.get_root_fingerprint(),
+            'derivation': self.get_derivation_prefix(),
+        })
 
     def format_seed(self, seed):
         return ' '.join(seed.split())
@@ -733,6 +737,8 @@ class Old_KeyStore(MasterPublicKeyMixin, Deterministic_KeyStore):
         return Old_KeyStore({'mpk': self.mpk})
 
     def _get_hex_seed(self, password) -> str:
+        if not is_hex_str(self.seed) and password is None:
+            raise InvalidPassword()
         hex_str = pw_decode(self.seed, password, version=self.pw_hash_version)
         assert is_hex_str(hex_str), f"expected hex str, got {type(hex_str)} with {len(hex_str)=}"
         return hex_str
@@ -895,6 +901,13 @@ class Hardware_KeyStore(Xpub, KeyStore):
         self.handler = None  # type: Optional[HardwareHandlerBase]
         run_hook('init_keystore', self)
 
+    def watching_only_keystore(self):
+        return BIP32_KeyStore({
+            'xpub': self.xpub,
+            'root_fingerprint': self.get_root_fingerprint(),
+            'derivation': self.get_derivation_prefix(),
+        })
+
     def set_label(self, label: Optional[str]) -> None:
         self.label = label
 
@@ -914,13 +927,13 @@ class Hardware_KeyStore(Xpub, KeyStore):
             'xpub': self.xpub,
             'derivation': self.get_derivation_prefix(),
             'root_fingerprint': self.get_root_fingerprint(),
-            'label':self.label,
+            'label': self.label,
             'soft_device_id': self.soft_device_id,
         }
 
     def is_watching_only(self):
-        '''The wallet is not watching-only; the user will be prompted for
-        pin and passphrase as appropriate when needed.'''
+        """The wallet is not watching-only; the user will be prompted for
+        pin and passphrase as appropriate when needed."""
         assert not self.has_seed()
         return False
 

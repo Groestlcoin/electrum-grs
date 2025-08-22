@@ -16,6 +16,7 @@ from electrum_grs.wallet import CannotBumpFee, CannotDoubleSpendTx, CannotCPFP, 
 from electrum_grs import keystore
 from electrum_grs.plugin import run_hook
 from electrum_grs.fee_policy import FeePolicy, FeeMethod
+from electrum_grs.network import NetworkException
 
 from .qewallet import QEWallet
 from .qetypes import QEAmount
@@ -887,11 +888,13 @@ class QETxCpfpFeeBumper(TxFeeSlider, TxMonMixin):
     def get_child_fee_from_total_feerate(self, fee_per_kb: Optional[int]) -> Optional[int]:
         if fee_per_kb is None:
             return None
-        fee = fee_per_kb * self._total_size / 1000 - self._parent_fee
-        fee = round(fee)
-        fee = min(self._max_fee, fee)
-        fee = max(self._total_size, fee)  # pay at least 1 sat/byte for combined size
-        return fee
+        package_fee = FeePolicy.estimate_fee_for_feerate(fee_per_kb=fee_per_kb, size=self._total_size)
+        child_fee = package_fee - self._parent_fee
+        child_fee = min(self._max_fee, child_fee)
+        # pay at least minrelayfee for combined size:
+        min_child_fee = FeePolicy.estimate_fee_for_feerate(fee_per_kb=self._wallet.wallet.relayfee(), size=self._total_size)
+        child_fee = max(min_child_fee, child_fee)
+        return child_fee
 
     def tx_verified(self):
         self._valid = False
@@ -996,6 +999,7 @@ class QETxSweepFinalizer(QETxFinalizer):
     def make_sweep_tx(self):
         address = self._wallet.wallet.get_receiving_address()
         assert self._wallet.wallet.is_mine(address)
+        assert self._txins is not None
 
         coins, keypairs = copy.deepcopy(self._txins)
         outputs = [PartialTxOutput.from_address_and_value(address, value='!')]
@@ -1013,6 +1017,9 @@ class QETxSweepFinalizer(QETxFinalizer):
             try:
                 self._txins = self._wallet.wallet.network.run_from_another_thread(sweep_preparations(privkeys, self._wallet.wallet.network))
                 self._logger.debug(f'txins {self._txins!r}')
+            except NetworkException as e:
+                self.warning = _('Network error') + ': ' + str(e)
+                return
             except UserFacingException as e:
                 self.warning = str(e)
                 return
@@ -1026,6 +1033,9 @@ class QETxSweepFinalizer(QETxFinalizer):
             return
         if not self._private_keys:
             self._logger.debug('private keys not set, ignoring update()')
+            return
+        if self._txins is None:
+            self._logger.debug('txins not set, ignoring update()')
             return
 
         try:

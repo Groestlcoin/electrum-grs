@@ -137,7 +137,10 @@ async def sweep_preparations(
 
     async def find_utxos_for_privkey(txin_type: str, privkey: bytes, compressed: bool):
         pubkey = ecc.ECPrivkey(privkey).get_public_key_bytes(compressed=compressed)
-        desc = descriptor.get_singlesig_descriptor_from_legacy_leaf(pubkey=pubkey.hex(), script_type=txin_type)
+        try:
+            desc = descriptor.get_singlesig_descriptor_from_legacy_leaf(pubkey=pubkey.hex(), script_type=txin_type)
+        except descriptor.NotLegacySinglesigScriptType:
+            raise UserFacingException(_("Unsupported script-type ({}) for sweeping.").format(txin_type)) from None
         await _append_utxos_to_inputs(
             inputs=inputs,
             network=network,
@@ -391,7 +394,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     """
 
     max_change_outputs = 3
-    gap_limit_for_change = 10
+    gap_limit_for_change = None  # type: int | None
 
     txin_type: str
     wallet_type: str
@@ -1202,8 +1205,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             domain=None,
             from_timestamp=None,
             to_timestamp=None,
-            from_height=None,
-            to_height=None
+            from_height=None,  # [from_height, to_height[
+            to_height=None,
     ) -> Dict[str, OnchainHistoryItem]:
         # sanity check
         if (from_timestamp is not None or to_timestamp is not None) \
@@ -1220,7 +1223,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         monotonic_timestamp = 0
         for hist_item in self.adb.get_history(domain=domain):
             timestamp = (hist_item.tx_mined_status.timestamp or TX_TIMESTAMP_INF)
-            height = hist_item.tx_mined_status
+            height = hist_item.tx_mined_status.height
             if from_timestamp and (timestamp or now) < from_timestamp:
                 continue
             if to_timestamp and (timestamp or now) >= to_timestamp:
@@ -1756,7 +1759,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             fee = self.adb.get_tx_fee(tx_hash)
             if fee is not None:
                 size = tx.estimated_size()
-                fee_per_byte = fee / size
+                fee_per_byte = Decimal(fee) / size
                 extra.append(format_fee_satoshis(fee_per_byte) + f" {util.UI_UNIT_NAME_FEERATE_SAT_PER_VB}")
             if fee is not None and height in (TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_UNCONFIRMED) \
                and self.network and self.network.has_fee_mempool():
@@ -1840,19 +1843,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             else:
                 change_addrs = [preferred_change_addr]
         elif self.use_change:
-            # Recalc and get unused change addresses
-            addrs = self.calc_unused_change_addresses()
-            # New change addresses are created only after a few
-            # confirmations.
-            if addrs:
-                # if there are any unused, select all
-                change_addrs = addrs
-            else:
-                # if there are none, take one randomly from the last few
-                if not allow_reusing_used_change_addrs:
-                    return []
-                addrs = self.get_change_addresses(slice_start=-self.gap_limit_for_change)
-                change_addrs = [random.choice(addrs)] if addrs else []
+            change_addrs = self._get_change_addresses_we_can_use_now(allow_reuse=allow_reusing_used_change_addrs)
         for addr in change_addrs:
             assert is_address(addr), f"not valid groestlcoin address: {addr}"
             # note that change addresses are not necessarily ismine
@@ -1872,21 +1863,38 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             return addrs[0]
         return None
 
-    @check_returned_address_for_corruption
     def get_new_sweep_address_for_channel(self) -> str:
+        addrs = self._get_change_addresses_we_can_use_now(allow_reuse=True)
+        if addrs:
+            return addrs[0]
+        # fallback for e.g. imported wallets
+        return self.get_receiving_address()
+
+    def _get_change_addresses_we_can_use_now(
+        self,
+        *,
+        allow_reuse: bool = True,
+    ) -> Sequence[str]:
         # Recalc and get unused change addresses
         addrs = self.calc_unused_change_addresses()
+        # New change addresses are created only after a few
+        # confirmations.
         if addrs:
-            selected_addr = addrs[0]
+            # if there are any unused, select all
+            change_addrs = addrs
         else:
             # if there are none, take one randomly from the last few
-            addrs = self.get_change_addresses(slice_start=-self.gap_limit_for_change)
-            if addrs:
-                selected_addr = random.choice(addrs)
-            else:  # fallback for e.g. imported wallets
-                selected_addr = self.get_receiving_address()
-        assert is_address(selected_addr), f"not valid groestlcoin address: {selected_addr}"
-        return selected_addr
+            if not allow_reuse:
+                return []
+            gap_limit = self.gap_limit_for_change or 0
+            addrs = self.get_change_addresses(slice_start=-gap_limit)
+            change_addrs = [random.choice(addrs)] if addrs else []
+        for addr in change_addrs:
+            assert is_address(addr), f"not valid groestlcoin address: {addr}"
+            # note that change addresses are not necessarily ismine
+            # in which case this is a no-op
+            self.check_address_for_corruption(addr)
+        return change_addrs
 
     def should_keep_reserve_utxo(
             self,
@@ -3256,6 +3264,21 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def save_keystore(self):
         pass
 
+    def can_enable_disable_keystore(self, ks: KeyStore) -> bool:
+        """Whether the wallet is capable of disabling/enabling the given keystore.
+        This is a necessary but not sufficient check: e.g. if wallet has LN channels, we should not allow disabling.
+        """
+        return False
+
+    def enable_keystore(self, keystore: KeyStore, is_hardware_keystore: bool, password) -> None:
+        raise NotImplementedError()
+
+    def disable_keystore(self, keystore: KeyStore) -> None:
+        raise NotImplementedError()
+
+    def _update_keystore(self, keystore: KeyStore) -> None:
+        raise NotImplementedError()
+
     @abstractmethod
     def has_seed(self) -> bool:
         pass
@@ -3364,7 +3387,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         long_warning = None
         short_warning = None
         allow_send = True
-        if feerate < self.relayfee() / 1000 and not is_future_tx:
+        if feerate < Decimal(self.relayfee()) / 1000 and not is_future_tx:
             long_warning = ' '.join([
                 _("This transaction requires a higher fee, or it will not be propagated by your current server."),
                 _("Try to raise your transaction fee, or use a server with a lower relay fee.")
@@ -3690,7 +3713,7 @@ class Imported_Wallet(Simple_Wallet):
                 for txin_type in bitcoin.WIF_SCRIPT_TYPES.keys():
                     try:
                         addr2 = bitcoin.pubkey_to_address(txin_type, pubkey)
-                    except NotImplementedError:
+                    except descriptor.NotLegacySinglesigScriptType:
                         pass
                     else:
                         if self.db.has_imported_address(addr2):
@@ -3805,11 +3828,13 @@ class Imported_Wallet(Simple_Wallet):
 
 
 class Deterministic_Wallet(Abstract_Wallet):
+    gap_limit_for_change: int
 
     def __init__(self, db, *, config):
         self._ephemeral_addr_to_addr_index = {}  # type: Dict[str, Sequence[int]]
         Abstract_Wallet.__init__(self, db, config=config)
         self.gap_limit = db.get('gap_limit', 20)
+        self.gap_limit_for_change = db.get('gap_limit_for_change', 10)
         # generate addresses now. note that without libsecp this might block
         # for a few seconds!
         self.synchronize()
@@ -4023,15 +4048,20 @@ class Deterministic_Wallet(Abstract_Wallet):
     def get_txin_type(self, address=None):
         return self.txin_type
 
-    def enable_keystore(self, keystore, is_hardware_keystore: bool, password):
+    def can_enable_disable_keystore(self, ks: KeyStore) -> bool:
+        return True
+
+    def enable_keystore(self, keystore: KeyStore, is_hardware_keystore: bool, password) -> None:
+        assert self.can_enable_disable_keystore(keystore)
         if not is_hardware_keystore and self.storage.is_encrypted_with_user_pw():
             keystore.update_password(None, password)
             self.db.put('use_encryption', True)
         self._update_keystore(keystore)
 
-    def disable_keystore(self, keystore):
-        from .keystore import BIP32_KeyStore
+    def disable_keystore(self, keystore: KeyStore) -> None:
+        assert self.can_enable_disable_keystore(keystore)
         assert not self.has_channels()
+        assert keystore in self.get_keystores()
         if hasattr(keystore, 'thread') and keystore.thread:
             keystore.thread.stop()
         if self.storage.is_encrypted_with_hw_device():
@@ -4079,7 +4109,8 @@ class Standard_Wallet(Simple_Wallet, Deterministic_Wallet):
         self.keystore.add_slip_19_ownership_proofs_to_tx(tx=tx, password=None)
 
     def _update_keystore(self, keystore):
-        assert self.keystore.get_master_public_key() == keystore.get_master_public_key()
+        if self.keystore.get_master_public_key() != keystore.get_master_public_key():
+            raise Exception("mismatching xpubs")
         self.keystore = keystore
         self.save_keystore()
 
@@ -4228,7 +4259,8 @@ def create_new_wallet(
     password: Optional[str] = None,
     encrypt_file: bool = True,
     seed_type: Optional[str] = None,
-    gap_limit: Optional[int] = None
+    gap_limit: Optional[int] = None,
+    gap_limit_for_change: Optional[int] = None,
 ) -> dict:
     """Create a new wallet"""
     storage = WalletStorage(path, allow_partial_writes=config.WALLET_PARTIAL_WRITES)
@@ -4244,6 +4276,8 @@ def create_new_wallet(
         db.put('lightning_xprv', k.get_lightning_xprv(None))
     if gap_limit is not None:
         db.put('gap_limit', gap_limit)
+    if gap_limit_for_change is not None:
+        db.put('gap_limit_for_change', gap_limit_for_change)
     wallet = Wallet(db, config=config)
     wallet.update_password(old_pw=None, new_pw=password, encrypt_storage=encrypt_file)
     wallet.synchronize()
@@ -4261,6 +4295,7 @@ def restore_wallet_from_text(
     password: Optional[str] = None,
     encrypt_file: Optional[bool] = None,
     gap_limit: Optional[int] = None,
+    gap_limit_for_change: Optional[int] = None,
 ) -> dict:
     """Restore a wallet from text. Text can be a seed phrase, a master
     public key, a master private key, a list of groestlcoin addresses
@@ -4304,6 +4339,8 @@ def restore_wallet_from_text(
         db.put('wallet_type', 'standard')
         if gap_limit is not None:
             db.put('gap_limit', gap_limit)
+        if gap_limit_for_change is not None:
+            db.put('gap_limit_for_change', gap_limit_for_change)
         wallet = Wallet(db, config=config)
     if db.storage:
         assert not db.storage.file_exists(), "file was created too soon! plaintext keys might have been written to disk"

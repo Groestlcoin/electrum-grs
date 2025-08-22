@@ -210,6 +210,8 @@ class CosignerWallet(Logger):
                     continue
                 try:
                     message = json_decode(message)
+                    if not isinstance(message, dict):
+                        raise Exception("malformed message, not dict")
                     tx_hex = message.get('tx')
                     label = message.get('label', '')
                     tx = tx_from_any(tx_hex)
@@ -275,9 +277,10 @@ class CosignerWallet(Logger):
         tx: Union['Transaction', 'PartialTransaction'],
         *,
         label: str = None,
-        on_failure: Callable = None,
-        on_success: Callable = None
+        on_failure: Callable[[str], None] = None,
+        on_success: Callable[[], None] = None
     ) -> None:
+        assert tx.txid(), "Shouldn't allow to save tx without txid"
         try:
             # TODO: adding tx should be handled more gracefully here:
             # 1) don't replace tx with same tx with less signatures

@@ -36,7 +36,7 @@ import inspect
 from collections import defaultdict
 from functools import wraps
 from decimal import Decimal, InvalidOperation
-from typing import Optional, TYPE_CHECKING, Dict, List
+from typing import Optional, TYPE_CHECKING, Dict, List, Any, Union
 import os
 import re
 
@@ -46,6 +46,7 @@ from . import util
 from .lnmsg import OnionWireSerializer
 from .logging import Logger
 from .onion_message import create_blinded_path, send_onion_message_to
+from .submarine_swaps import NostrTransport
 from .util import (
     bfh, json_decode, json_normalize, is_hash256_str, is_hex_str, to_bytes, parse_max_spend, to_decimal,
     UserFacingException, InvalidPassword
@@ -100,8 +101,14 @@ def satoshis(amount):
     return int(COIN*to_decimal(amount)) if amount is not None else None
 
 
-def format_satoshis(x):
-    return str(to_decimal(x)/COIN) if x is not None else None
+def format_satoshis(x: Union[float, int, Decimal, None]) -> Optional[str]:
+    """
+    input: satoshis as a Number
+    output: str formatted as bitcoin amount
+    """
+    if x is None:
+        return None
+    return util.format_satoshis_plain(x, is_max_allowed=False)
 
 
 class Command:
@@ -475,7 +482,7 @@ class Commands(Logger):
         for txin in wallet.get_utxos():
             d = txin.to_json()
             v = d.pop("value_sats")
-            d["value"] = str(to_decimal(v)/COIN) if v is not None else None
+            d["value"] = format_satoshis(v)
             coins.append(d)
         return coins
 
@@ -718,13 +725,13 @@ class Commands(Logger):
         """Return the balance of your wallet. """
         c, u, x = wallet.get_balance()
         l = wallet.lnworker.get_balance() if wallet.lnworker else None
-        out = {"confirmed": str(to_decimal(c)/COIN)}
+        out = {"confirmed": format_satoshis(c)}
         if u:
-            out["unconfirmed"] = str(to_decimal(u)/COIN)
+            out["unconfirmed"] = format_satoshis(u)
         if x:
-            out["unmatured"] = str(to_decimal(x)/COIN)
+            out["unmatured"] = format_satoshis(x)
         if l:
-            out["lightning"] = str(to_decimal(l)/COIN)
+            out["lightning"] = format_satoshis(l)
         return out
 
     @command('n')
@@ -737,8 +744,8 @@ class Commands(Logger):
         """
         sh = bitcoin.address_to_scripthash(address)
         out = await self.network.get_balance_for_scripthash(sh)
-        out["confirmed"] =  str(to_decimal(out["confirmed"])/COIN)
-        out["unconfirmed"] =  str(to_decimal(out["unconfirmed"])/COIN)
+        out["confirmed"] = format_satoshis(out["confirmed"])
+        out["unconfirmed"] = format_satoshis(out["unconfirmed"])
         return out
 
     @command('n')
@@ -1011,7 +1018,7 @@ class Commands(Logger):
             await self.addtransaction(result, wallet=wallet)
         return result
 
-    def get_year_timestamps(self, year:int):
+    def get_year_timestamps(self, year: int) -> dict[str, Any]:
         kwargs = {}
         if year:
             start_date = datetime.datetime(year, 1, 1)
@@ -1071,21 +1078,26 @@ class Commands(Logger):
         return new_tx.serialize()
 
     @command('w')
-    async def onchain_history(self, show_fiat=False, year=None, show_addresses=False, wallet: Abstract_Wallet = None):
+    async def onchain_history(
+        self, show_fiat=False, year=None, show_addresses=False,
+        from_height=None, to_height=None,
+        wallet: Abstract_Wallet = None,
+    ):
         """Wallet onchain history. Returns the transaction history of your wallet.
 
         arg:bool:show_addresses:Show input and output addresses
         arg:bool:show_fiat:Show fiat value of transactions
-        arg:bool:show_fees:Show miner fees paid by transactions
         arg:int:year:Show history for a given year
+        arg:int:from_height:Only show transactions that confirmed after(inclusive) given block height
+        arg:int:to_height:Only show transactions that confirmed before(exclusive) given block height
         """
         # trigger lnwatcher callbacks for their side effects: setting labels and accounting_addresses
         if not self.network and wallet.lnworker:
             await wallet.lnworker.lnwatcher.trigger_callbacks(requires_synchronizer=False)
 
-        #'from_height': (None, "Only show transactions that confirmed after given block height"),
-        #'to_height':   (None, "Only show transactions that confirmed before given block height"),
         kwargs = self.get_year_timestamps(year)
+        kwargs['from_height'] = from_height
+        kwargs['to_height'] = to_height
         onchain_history = wallet.get_onchain_history(**kwargs)
         out = [x.to_dict() for x in onchain_history.values()]
         if show_fiat:
@@ -1177,7 +1189,7 @@ class Commands(Logger):
             if labels or balance:
                 item = (item,)
             if balance:
-                item += (util.format_satoshis(sum(wallet.get_addr_balance(addr))),)
+                item += (format_satoshis(sum(wallet.get_addr_balance(addr))),)
             if labels:
                 item += (repr(wallet.get_label_for_address(addr)),)
             out.append(item)
@@ -1961,6 +1973,32 @@ class Commands(Logger):
             'log': [x.formatted_tuple() for x in log]
         }
 
+    @command('wnl')
+    async def get_submarine_swap_providers(self, query_time=15, wallet: Abstract_Wallet = None):
+        """
+        Queries nostr relays for available submarine swap providers.
+
+        To configure one of the providers use:
+        setconfig swapserver_npub 'npub...'
+
+        arg:int:query_time:Optional timeout how long the relays should be queried for provider announcements. Default: 15 sec
+        """
+        sm = wallet.lnworker.swap_manager
+        async with sm.create_transport() as transport:
+            assert isinstance(transport, NostrTransport)
+            await asyncio.sleep(query_time)
+            offers = transport.get_recent_offers()
+        result = {}
+        for offer in offers:
+            result[offer.server_npub] = {
+                "percentage_fee": offer.pairs.percentage,
+                "max_forward_sat": offer.pairs.max_forward,
+                "max_reverse_sat": offer.pairs.max_reverse,
+                "min_amount_sat": offer.pairs.min_amount,
+                "prepayment": 2 * offer.pairs.mining_fee,
+            }
+        return result
+
     @command('wnpl')
     async def normal_swap(self, onchain_amount, lightning_amount, password=None, wallet: Abstract_Wallet = None):
         """
@@ -1970,8 +2008,13 @@ class Commands(Logger):
         arg:decimal_or_dryrun:onchain_amount:Amount to be sent, in GRS. Set it to 'dryrun' to receive a value
         """
         sm = wallet.lnworker.swap_manager
-        with sm.create_transport() as transport:
-            await sm.is_initialized.wait()
+        assert self.config.SWAPSERVER_NPUB or self.config.SWAPSERVER_URL, \
+            "Configure swap provider first. See 'get_submarine_swap_providers'."
+        async with sm.create_transport() as transport:
+            try:
+                await asyncio.wait_for(sm.is_initialized.wait(), timeout=15)
+            except asyncio.TimeoutError:
+                raise TimeoutError("Could not find configured swap provider. Setup another one. See 'get_submarine_swap_providers'")
             if lightning_amount == 'dryrun':
                 onchain_amount_sat = satoshis(onchain_amount)
                 lightning_amount_sat = sm.get_recv_amount(onchain_amount_sat, is_reverse=False)
@@ -1997,37 +2040,53 @@ class Commands(Logger):
         }
 
     @command('wnpl')
-    async def reverse_swap(self, lightning_amount, onchain_amount, password=None, wallet: Abstract_Wallet = None):
+    async def reverse_swap(
+        self, lightning_amount, onchain_amount, prepayment='dryrun', password=None, wallet: Abstract_Wallet = None,
+    ):
         """
         Reverse submarine swap: send on Lightning, receive on-chain
 
         arg:decimal_or_dryrun:lightning_amount:Amount to be sent, in GRS. Set it to 'dryrun' to receive a value
         arg:decimal_or_dryrun:onchain_amount:Amount to be received, in GRS. Set it to 'dryrun' to receive a value
+        arg:decimal_or_dryrun:prepayment:Lightning payment required by the swap provider in order to cover their mining fees. This is included in lightning_amount. However, this part of the operation is not trustless; the provider is trusted to fail this payment if the swap fails.
         """
         sm = wallet.lnworker.swap_manager
-        with sm.create_transport() as transport:
-            await sm.is_initialized.wait()
+        assert self.config.SWAPSERVER_NPUB or self.config.SWAPSERVER_URL, \
+            "Configure swap provider first. See 'get_submarine_swap_providers'."
+        async with sm.create_transport() as transport:
+            try:
+                await asyncio.wait_for(sm.is_initialized.wait(), timeout=15)
+            except asyncio.TimeoutError:
+                raise TimeoutError("Could not find configured swap provider. Setup another one. See 'get_submarine_swap_providers'")
             if onchain_amount == 'dryrun':
                 lightning_amount_sat = satoshis(lightning_amount)
                 onchain_amount_sat = sm.get_recv_amount(lightning_amount_sat, is_reverse=True)
+                assert prepayment == "dryrun", f"Cannot use {prepayment=} in dryrun. Set it to 'dryrun'."
+                prepayment_sat = 2 * sm.mining_fee
                 funding_txid = None
             elif lightning_amount == 'dryrun':
                 onchain_amount_sat = satoshis(onchain_amount)
                 lightning_amount_sat = sm.get_send_amount(onchain_amount_sat, is_reverse=True)
+                assert prepayment == "dryrun", f"Cannot use {prepayment=} in dryrun. Set it to 'dryrun'."
+                prepayment_sat = 2 * sm.mining_fee
                 funding_txid = None
             else:
                 lightning_amount_sat = satoshis(lightning_amount)
                 claim_fee = sm.get_fee_for_txbatcher()
                 onchain_amount_sat = satoshis(onchain_amount) + claim_fee
+                assert prepayment != "dryrun", "Provide the 'prepayment' obtained from the dryrun."
+                prepayment_sat = satoshis(prepayment)
                 funding_txid = await wallet.lnworker.swap_manager.reverse_swap(
                     transport=transport,
                     lightning_amount_sat=lightning_amount_sat,
                     expected_onchain_amount_sat=onchain_amount_sat,
+                    prepayment_sat=prepayment_sat,
                 )
         return {
             'funding_txid': funding_txid,
             'lightning_amount': format_satoshis(lightning_amount_sat),
             'onchain_amount': format_satoshis(onchain_amount_sat),
+            'prepayment': format_satoshis(prepayment_sat)
         }
 
     @command('n')

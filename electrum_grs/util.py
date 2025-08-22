@@ -234,6 +234,8 @@ def to_decimal(x: Union[str, float, int, Decimal]) -> Decimal:
     #   Decimal('41754.681')
     if isinstance(x, Decimal):
         return x
+    if isinstance(x, int):
+        return Decimal(x)
     return Decimal(str(x))
 
 
@@ -325,7 +327,8 @@ class MyEncoder(json.JSONEncoder):
         if isinstance(obj, Decimal):
             return str(obj)
         if isinstance(obj, datetime):
-            return obj.isoformat(' ')[:-3]
+            # note: if there is a timezone specified, this will include the offset
+            return obj.isoformat(' ', timespec="minutes")
         if isinstance(obj, set):
             return list(obj)
         if isinstance(obj, bytes): # for nametuples in lnchannel
@@ -792,14 +795,17 @@ def format_satoshis_plain(
         x: Union[int, float, Decimal, str],  # amount in satoshis,
         *,
         decimal_point: int = 8,  # how much to shift decimal point to left (default: sat->BTC)
+        is_max_allowed: bool = True,
 ) -> str:
     """Display a satoshi amount scaled.  Always uses a '.' as a decimal
     point and has no thousands separator"""
-    if parse_max_spend(x):
+    if is_max_allowed and parse_max_spend(x):
         return f'max({x})'
     assert isinstance(x, (int, float, Decimal)), f"{x!r} should be a number"
+    # TODO(ghost43) just hard-fail if x is a float. do we even use floats for money anywhere?
+    x = to_decimal(x)
     scale_factor = pow(10, decimal_point)
-    return "{:.8f}".format(Decimal(x) / scale_factor).rstrip('0').rstrip('.')
+    return "{:.8f}".format(x / scale_factor).rstrip('0').rstrip('.')
 
 
 # Check that Decimal precision is sufficient.
@@ -831,8 +837,10 @@ def format_satoshis(
     if parse_max_spend(x):
         return f'max({x})'
     assert isinstance(x, (int, float, Decimal)), f"{x!r} should be a number"
+    # TODO(ghost43) just hard-fail if x is a float. do we even use floats for money anywhere?
+    x = to_decimal(x)
     # lose redundant precision
-    x = Decimal(x).quantize(Decimal(10) ** (-precision))
+    x = x.quantize(Decimal(10) ** (-precision))
     # format string
     overall_precision = decimal_point + precision  # max digits after final decimal point
     decimal_format = "." + str(overall_precision) if overall_precision > 0 else ""
@@ -893,10 +901,11 @@ def quantize_feerate(fee) -> Union[None, Decimal, int]:
     return Decimal(fee).quantize(_feerate_quanta, rounding=decimal.ROUND_HALF_DOWN)
 
 
+DEFAULT_TIMEZONE = None  # type: timezone | None  # None means local OS timezone
 def timestamp_to_datetime(timestamp: Union[int, float, None], *, utc: bool = False) -> Optional[datetime]:
     if timestamp is None:
         return None
-    tz = None
+    tz = DEFAULT_TIMEZONE
     if utc:
         tz = timezone.utc
     return datetime.fromtimestamp(timestamp, tz=tz)
@@ -1708,7 +1717,7 @@ def _set_custom_task_factory(loop: asyncio.AbstractEventLoop):
     loop.set_task_factory(factory)
 
 
-def run_sync_function_on_asyncio_thread(func: Callable, *, block: bool) -> None:
+def run_sync_function_on_asyncio_thread(func: Callable[[], Any], *, block: bool) -> None:
     """Run a non-async fn on the asyncio thread. Can be called from any thread.
 
     If the current thread is already the asyncio thread, func is guaranteed
