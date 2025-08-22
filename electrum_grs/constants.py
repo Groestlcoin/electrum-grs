@@ -251,7 +251,7 @@ class BitcoinSignet(BitcoinTestnet):
 class BitcoinMutinynet(BitcoinTestnet):
 
     NET_NAME = "mutinynet"
-    BOLT11_HRP = "tbs"
+    BOLT11_HRP = "tgrss"
     GENESIS = "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6"
     LN_DNS_SEEDS = []
 

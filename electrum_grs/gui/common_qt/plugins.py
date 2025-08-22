@@ -6,8 +6,8 @@ from PyQt6.QtCore import pyqtSignal, pyqtProperty, QObject
 from electrum_grs.logging import get_logger
 
 if TYPE_CHECKING:
-    from electrum.gui.qml import ElectrumQmlApplication
-    from electrum.plugin import BasePlugin
+    from electrum_grs.gui.qml import ElectrumQmlApplication
+    from electrum_grs.plugin import BasePlugin
 
 
 class PluginQObject(QObject):
