@@ -13,6 +13,7 @@ from typing import Tuple, Dict, TYPE_CHECKING, Optional, Union, Set, Callable, A
 from datetime import datetime
 import functools
 from functools import partial
+import inspect
 
 import electrum_ecc as ecc
 from electrum_ecc import ecdsa_sig64_from_r_and_s, ecdsa_der_sig_from_ecdsa_sig64, ECPubkey
@@ -256,7 +257,7 @@ class Peer(Logger, EventListener):
                 payload['sender_node_id'] = self.pubkey
             # note: the message handler might be async or non-async. In either case, by default,
             #       we wait for it to complete before we return, i.e. before the next message is processed.
-            if asyncio.iscoroutinefunction(f):
+            if inspect.iscoroutinefunction(f):
                 async with AsyncHangDetector(
                     message=f"message handler still running for {message_type.upper()}",
                     logger=self.logger,
@@ -269,7 +270,7 @@ class Peer(Logger, EventListener):
         """Makes a message handler non-blocking: while processing the message,
         the message_loop keeps processing subsequent incoming messages asynchronously.
         """
-        assert asyncio.iscoroutinefunction(func), 'func needs to be a coroutine'
+        assert inspect.iscoroutinefunction(func), 'func needs to be a coroutine'
         @functools.wraps(func)
         async def wrapper(self: 'Peer', *args, **kwargs):
             return await self.taskgroup.spawn(func(self, *args, **kwargs))
@@ -2545,6 +2546,8 @@ class Peer(Logger, EventListener):
             return None, None
 
         # TODO check against actual min_final_cltv_expiry_delta from invoice (and give 2-3 blocks of leeway?)
+        # note: payment_bundles might get split here, e.g. one payment is "already forwarded" and the other is not.
+        #       In practice, for the swap prepayment use case, this does not matter.
         if local_height + MIN_FINAL_CLTV_DELTA_ACCEPTED > htlc.cltv_abs and not already_forwarded:
             log_fail_reason(f"htlc.cltv_abs is unreasonably close")
             raise exc_incorrect_or_unknown_pd
@@ -2580,7 +2583,9 @@ class Peer(Logger, EventListener):
                 return None, (payment_key, callback)
 
         # TODO don't accept payments twice for same invoice
-        # TODO check invoice expiry
+        # note: we don't check invoice expiry (bolt11 'x' field) on the receiver-side.
+        #       - semantics are weird: would make sense for simple-payment-receives, but not
+        #         if htlc is expected to be pending for a while, e.g. for a hold-invoice.
         info = self.lnworker.get_payment_info(payment_hash)
         if info is None:
             log_fail_reason(f"no payment_info found for RHASH {htlc.payment_hash.hex()}")

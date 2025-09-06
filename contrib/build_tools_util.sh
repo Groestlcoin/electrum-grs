@@ -35,7 +35,7 @@ function verify_signature() {
 
 function verify_hash() {
     local file=$1 expected_hash=$2
-    actual_hash=$(sha256sum $file | awk '{print $1}')
+    actual_hash=$(sha256sum "$file" | awk '{print $1}')
     if [ "$actual_hash" == "$expected_hash" ]; then
         return 0
     else
@@ -47,8 +47,8 @@ function verify_hash() {
 
 function download_if_not_exist() {
     local file_name=$1 url=$2
-    if [ ! -e $file_name ] ; then
-        wget -O $file_name "$url"
+    if [ ! -e "$file_name" ] ; then
+        wget -O "$file_name" "$url"
     fi
 }
 
@@ -71,6 +71,24 @@ clone_or_update_repo() {
         info "Cloning repository: $repo_url to $repo_dir"
         git clone "$repo_url" "$repo_dir" >/dev/null 2>&1 || fail "Failed to clone repository $repo_url"
         git -C "$repo_dir" checkout "$commit_hash^{commit}" >/dev/null 2>&1 || fail "Failed to checkout commit $commit_hash"
+    fi
+}
+
+apply_patch() {
+    local patch=$1
+    local path=$2
+
+    if [ -z "$patch" ] || [ -z "$path" ]; then
+        fail "apply_patch: invalid arguments: patch='$patch', path='$path'"
+    fi
+
+    if [ -d "$path" ]; then
+        info "Patching: $patch"
+        cd "$path"
+        patch -p1 <"$patch"
+        cd -
+    else
+        fail "apply_patch: path='$path' not found"
     fi
 }
 
