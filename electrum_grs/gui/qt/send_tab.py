@@ -327,7 +327,14 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
         is_max = any(parse_max_spend(outval) for outval in output_values)
         output_value = '!' if is_max else sum(output_values)
 
-        candidates = self.wallet.get_candidates_for_batching(outputs, []) # coins not used
+        # To find batching candidates, we need to know our available UTXOs.
+        # Ideally should use same set of coins make_tx() will use.
+        # note: - prone to races: coins set might change due to new txs between now and make_tx() call
+        #       - make_tx() might pass different params to get_coins()
+        #         - to mitigate, we prefer to be more restrictive. hence confirmed_only=True
+        coins_conservative = get_coins(nonlocal_only=True, confirmed_only=True)
+        candidates = self.wallet.get_candidates_for_batching(outputs, coins=coins_conservative)
+
         tx, is_preview = self.window.confirm_tx_dialog(make_tx, output_value, batching_candidates=candidates)
         if tx is None:
             # user cancelled
@@ -712,7 +719,7 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
                     self.window.new_channel_dialog(amount_sat=amount_sat, min_amount_sat=min_amount_sat)
                 elif r == 'swap':
                     chan, swap_recv_amount_sat = can_pay_with_swap
-                    self.window.run_swap_dialog(is_reverse=False, recv_amount_sat=swap_recv_amount_sat, channels=[chan])
+                    self.window.run_swap_dialog(is_reverse=False, recv_amount_sat_or_max=swap_recv_amount_sat, channels=[chan])
                 elif r == 'onchain':
                     self.pay_onchain_dialog(invoice.get_outputs(), nonlocal_only=True, invoice=invoice)
             return

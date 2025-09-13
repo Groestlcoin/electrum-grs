@@ -43,7 +43,7 @@ from electrum_grs.address_synchronizer import TX_HEIGHT_LOCAL
 from electrum_grs.i18n import _
 from electrum_grs.util import (block_explorer_URL, profiler, TxMinedInfo,
                            OrderedDictWithIndex, timestamp_to_datetime,
-                           Satoshis, format_time)
+                           Satoshis, format_time, Fiat)
 from electrum_grs.logging import get_logger, Logger
 from electrum_grs.simple_config import SimpleConfig
 
@@ -298,10 +298,9 @@ class HistoryModel(CustomModel, Logger):
         wallet = self.window.wallet
         self.set_visibility_of_columns()
         transactions = wallet.get_full_history(
-            self.window.fx,
+            fx=self.window.fx if self.should_show_fiat() else None,
             onchain_domain=self.get_domain(),
             include_lightning=self.should_include_lightning_payments(),
-            include_fiat=self.should_show_fiat(),
         )
         old_length = self._root.childCount()
         if old_length != 0:
@@ -853,26 +852,32 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
         self.main_window.show_message(_("Your wallet history has been successfully exported."))
 
     def do_export_history(self, file_name, is_csv):
-        txns = self.wallet.get_full_history(fx=self.main_window.fx)
+        txns = self.wallet.get_full_history(fx=self.main_window.fx if self.hm.should_show_fiat() else None)
         lines = []
 
-        def get_all_fees_paid_sat(h_item: dict) -> int:
+        def get_all_fees_paid_by_item(h_item: dict) -> Tuple[int, Fiat]:
             # gets all fees paid in an item (or group), as the outer group doesn't contain the
             # transaction fees paid by the children
             fees_sat = 0
+            fees_fiat = Fiat(ccy=self.main_window.fx.ccy, value=Decimal())
             for child in h_item.get('children', []):
                 fees_sat += child['fee_sat'] or 0 if 'fee_sat' in child \
                                 else (child.get('fee_msat', 0) or 0) // 1000
+                if child_fiat_fee := child.get('fiat_fee'):
+                    fees_fiat += child_fiat_fee
 
             fees_sat += h_item['fee_sat'] or 0 if 'fee_sat' in h_item \
                             else (h_item.get('fee_msat', 0) or 0) // 1000
-            return fees_sat
+            if h_item_fiat_fee := h_item.get('fiat_fee'):
+                fees_fiat += h_item_fiat_fee
+            return fees_sat, fees_fiat
 
         if is_csv:
             # sort by timestamp so the generated csv is more understandable on first sight
             txns = dict(sorted(txns.items(), key=lambda h_item: h_item[1]['timestamp'] or 0))
             for item in txns.values():
                 # tx groups will are shown as single element
+                fees_sat, fees_fiat = get_all_fees_paid_by_item(item)
                 line = [
                     item.get('txid', ''),
                     item.get('payment_hash', ''),
@@ -881,8 +886,8 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
                     item['bc_value'],
                     item['ln_value'],
                     item.get('fiat_value', ''),
-                    get_all_fees_paid_sat(item),
-                    item.get('fiat_fee', ''),
+                    fees_sat,
+                    str(fees_fiat),
                     item['date']
                 ]
                 lines.append(line)

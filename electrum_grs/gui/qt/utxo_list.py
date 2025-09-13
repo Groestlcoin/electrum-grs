@@ -103,12 +103,11 @@ class UTXOList(MyTreeView):
         self.proxy.setDynamicSortFilter(False)  # temp. disable re-sorting after every change
         utxos = self.wallet.get_utxos()
         self._maybe_reset_coincontrol(utxos)
-        self._utxo_dict = {}
+        self._utxo_dict = dict([(utxo.prevout.to_str(), utxo) for utxo in utxos])
         self.std_model.clear()
         self.update_headers(self.__class__.headers)
         for idx, utxo in enumerate(utxos):
             name = utxo.prevout.to_str()
-            self._utxo_dict[name] = utxo
             labels = [""] * len(self.Columns)
             amount_str = self.main_window.format_amount(
                 utxo.value_sats(), whitespaces=True)
@@ -192,6 +191,7 @@ class UTXOList(MyTreeView):
         return all([utxo.prevout.to_str() in self._spend_set for utxo in coins])
 
     def add_to_coincontrol(self, coins: List[PartialTxInput]):
+        assert all(utxo.prevout.to_str() in self._utxo_dict for utxo in coins) # see issue 10206
         coins = self._filter_frozen_coins(coins)
         for utxo in coins:
             self._spend_set.add(utxo.prevout.to_str())
@@ -255,7 +255,7 @@ class UTXOList(MyTreeView):
     def swap_coins(self, coins):
         #self.clear_coincontrol()
         self.add_to_coincontrol(coins)
-        self.main_window.run_swap_dialog(is_reverse=False, recv_amount_sat='!')
+        self.main_window.run_swap_dialog(is_reverse=False, recv_amount_sat_or_max='!')
         self.clear_coincontrol()
 
     def can_open_channel(self, coins):

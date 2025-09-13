@@ -80,6 +80,7 @@ from .lnutil import MIN_FUNDING_SAT
 from .lntransport import extract_nodeid
 from .descriptor import Descriptor
 from .txbatcher import TxBatcher
+from .submarine_swaps import MIN_SWAP_AMOUNT_SAT
 
 if TYPE_CHECKING:
     from .network import Network
@@ -1426,16 +1427,16 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     @profiler
     def get_full_history(
             self,
-            fx=None,
             *,
+            fx: 'FxThread' = None,  # used for fiat values if set
             onchain_domain=None,
             include_lightning=True,
-            include_fiat=False
     ) -> OrderedDictWithIndex:
         """
         includes both onchain and lightning
         includes grouping information
         """
+        include_fiat = fx is not None and fx.has_history()
         transactions_tmp = OrderedDictWithIndex()
         # add on-chain txns
         onchain_history = self.get_onchain_history(domain=onchain_domain)
@@ -1475,7 +1476,6 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 if parent is None:
                     parent = {
                         'label': group_label,
-                        'fiat_value': Fiat(Decimal(0), fx.ccy) if fx else None,
                         'bc_value': Satoshis(0),
                         'ln_value': Satoshis(0),
                         'value': Satoshis(0),
@@ -1488,6 +1488,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                         'confirmations': 0,
                         'txid': '----',
                     }
+                    if include_fiat:
+                        parent['fiat_value'] = Fiat(Decimal(0), fx.ccy)
                     transactions[key] = parent
                 parent['bc_value'] += tx_item['bc_value']
                 parent['ln_value'] += tx_item['ln_value']
@@ -1514,17 +1516,20 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             item['value'] = item.get('bc_value', Satoshis(0)) + item.get('ln_value', Satoshis(0))
             for child in item.get('children', []):
                 child['value'] = child.get('bc_value', Satoshis(0)) + child.get('ln_value', Satoshis(0))
-            if include_fiat:
-                value = item['value'].value
-                txid = item.get('txid')
-                if not item.get('lightning') and txid:
-                    fiat_fields = self.get_tx_item_fiat(tx_hash=txid, amount_sat=value, fx=fx, tx_fee=item['fee_sat'])
-                    item.update(fiat_fields)
+            if not include_fiat:
+                continue
+            # add fiat values to both the root item and its children
+            for add_fiat_item in [item] + children:
+                value = add_fiat_item['value'].value
+                txid = add_fiat_item.get('txid')
+                if not add_fiat_item.get('lightning') and txid:
+                    fiat_fields = self.get_tx_item_fiat(tx_hash=txid, amount_sat=value, fx=fx, tx_fee=add_fiat_item['fee_sat'])
+                    add_fiat_item.update(fiat_fields)
                 else:
-                    timestamp = item['timestamp'] or now
+                    timestamp = add_fiat_item['timestamp'] or now
                     fiat_value = value / Decimal(bitcoin.COIN) * fx.timestamp_rate(timestamp)
-                    item['fiat_value'] = Fiat(fiat_value, fx.ccy)
-                    item['fiat_default'] = True
+                    add_fiat_item['fiat_value'] = Fiat(fiat_value, fx.ccy)
+                    add_fiat_item['fiat_default'] = True
         return transactions
 
     @profiler
@@ -1788,7 +1793,16 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def dust_threshold(self):
         return dust_threshold(self.network)
 
-    def get_candidates_for_batching(self, outputs, coins) -> Sequence[Transaction]:
+    def get_candidates_for_batching(
+        self,
+        outputs: Sequence[PartialTxOutput],
+        *,
+        coins: Sequence[PartialTxInput],
+    ) -> Sequence[Transaction]:
+        """
+        coins: utxos available to add as inputs into the final tx. If empty, the set of candidates is restricted to
+               base txs with large enough change outputs to cover paying for all the `outputs`.
+        """
         # do not batch if we spend max (not supported by make_unsigned_transaction)
         if any([parse_max_spend(o.value) is not None for o in outputs]):
             return []
@@ -3429,7 +3443,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             self.lnworker and len([chan for chan in self.lnworker.channels.values() if chan.is_open()]) > 0
         )
         lightning_online = self.lnworker and self.lnworker.num_peers() > 0
-        can_receive_lightning = self.lnworker and amount_sat <= self.lnworker.num_sats_can_receive()
+        can_receive = self.lnworker.num_sats_can_receive()
+        can_receive_lightning = self.lnworker and can_receive > 0 and amount_sat <= can_receive
         try:
             zeroconf_nodeid = extract_nodeid(self.config.ZEROCONF_TRUSTED_NODE)[0]
         except Exception:
@@ -3469,7 +3484,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     ln_help = _('You must be online to receive Lightning payments.')
                 elif not can_receive_lightning or (amount_sat <= 0 and not lightning_has_channels):
                     ln_rebalance_suggestion = self.lnworker.suggest_rebalance_to_receive(amount_sat)
-                    ln_swap_suggestion = self.lnworker.suggest_swap_to_receive(amount_sat)
+                    ln_swap_suggestion = self.lnworker.suggest_swap_to_receive(max(amount_sat, MIN_SWAP_AMOUNT_SAT))
                     # prefer to use swaps over JIT channels if possible
                     if can_get_zeroconf_channel and not bool(ln_rebalance_suggestion) and not bool(ln_swap_suggestion):
                         if amount_sat < MIN_FUNDING_SAT:
@@ -3483,11 +3498,11 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                                         f'service provider. Service fees are deducted from the incoming payment.')
                     else:
                         ln_is_error = True
-                        ln_help = _('You do not have the capacity to receive this amount with Lightning.')
+                        ln_help = _('You do not have enough capacity to receive with Lightning.')
                         if bool(ln_rebalance_suggestion):
-                            ln_help += '\n\n' + _('You may have that capacity if you rebalance your channels.')
+                            ln_help += '\n\n' + _('You may have enough capacity if you rebalance your channels.')
                         elif bool(ln_swap_suggestion):
-                            ln_help += '\n\n' + _('You may have that capacity if you swap some of your funds.')
+                            ln_help += '\n\n' + _('You may have enough capacity if you swap some of your funds.')
                 # for URI that has LN part but no onchain part, copy error:
                 if not addr and ln_is_error:
                     URI_is_error = ln_is_error
