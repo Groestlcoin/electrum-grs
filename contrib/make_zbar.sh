@@ -56,9 +56,24 @@ info "Building $pkgname..."
                 --disable-dependency-tracking"
         elif [ $(uname) == "Darwin" ]; then
             # macos target
+            if ! command -v brew >/dev/null 2>&1; then
+            fail "Homebrew not found. Install Homebrew or adjust the script."
+            fi
+            brew list --versions libiconv >/dev/null 2>&1 || brew install libiconv
+            brew list --versions gettext  >/dev/null 2>&1 || brew install gettext
+
+            LIBICONV_PREFIX="$(brew --prefix libiconv)"
+            GETTEXT_PREFIX="$(brew --prefix gettext)"
+
+            # Help configure find headers/libs from keg-only formulae
+            export CPPFLAGS="${CPPFLAGS:-} -I${LIBICONV_PREFIX}/include -I${GETTEXT_PREFIX}/include"
+            export LDFLAGS="${LDFLAGS:-} -L${LIBICONV_PREFIX}/lib -L${GETTEXT_PREFIX}/lib"
+            export PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-}:${GETTEXT_PREFIX}/lib/pkgconfig"
             AUTOCONF_FLAGS="$AUTOCONF_FLAGS \
                 --with-x=no \
                 --enable-video=no \
+                --with-libiconv-prefix=${LIBICONV_PREFIX} \
+                --with-libintl-prefix=${GETTEXT_PREFIX} \
                 --with-jpeg=no"
         else
             # linux target
