@@ -39,10 +39,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: 3.12.10
+      - name: Prepare type2 runtime on host (uses host Docker)
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x contrib/build-linux/appimage/make_type2_runtime.sh
+          bash -lc "./contrib/build-linux/appimage/make_type2_runtime.sh"
       - name: Builder image
         run: docker build -t electrum-grs-appimage-builder-img ./contrib/build-linux/appimage/
       - name: Compile Linux AppImage
-        run: docker run --name electrum-grs-appimage-builder-cont -v $PWD:/opt/electrum-grs --rm --workdir /opt/electrum-grs/contrib/build-linux/appimage electrum-grs-appimage-builder-img ./make_type2_runtime.sh && ./make_appimage.sh
+        run: docker run --name electrum-grs-appimage-builder-cont -v $PWD:/opt/electrum-grs --rm --workdir /opt/electrum-grs/contrib/build-linux/appimage electrum-grs-appimage-builder-img ./make_appimage.sh
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
