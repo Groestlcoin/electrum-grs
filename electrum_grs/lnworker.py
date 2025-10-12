@@ -869,6 +869,8 @@ class LNWallet(LNWorker):
             features |= LnFeatures.OPTION_ANCHORS_ZERO_FEE_HTLC_OPT
         if self.config.ACCEPT_ZEROCONF_CHANNELS:
             features |= LnFeatures.OPTION_ZEROCONF_OPT
+        if self.config.EXPERIMENTAL_LN_FORWARD_PAYMENTS or self.config.EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS:
+            features |= LnFeatures.OPTION_ONION_MESSAGE_OPT
         if self.config.EXPERIMENTAL_LN_FORWARD_PAYMENTS and self.config.LIGHTNING_USE_GOSSIP:
             features |= LnFeatures.GOSSIP_QUERIES_OPT  # signal we have gossip to fetch
         LNWorker.__init__(self, self.node_keypair, features, config=self.config)
@@ -1433,12 +1435,12 @@ class LNWallet(LNWorker):
     def cb_data(self, node_id: bytes) -> bytes:
         return CB_MAGIC_BYTES + node_id[0:NODE_ID_PREFIX_LEN]
 
-    def decrypt_cb_data(self, encrypted_data, funding_address):
+    def decrypt_cb_data(self, encrypted_data: bytes, funding_address: str) -> bytes:
         funding_scripthash = bytes.fromhex(address_to_scripthash(funding_address))
         nonce = funding_scripthash[0:12]
         return chacha20_decrypt(key=self.backup_key, data=encrypted_data, nonce=nonce)
 
-    def encrypt_cb_data(self, data, funding_address):
+    def encrypt_cb_data(self, data: bytes, funding_address: str) -> bytes:
         funding_scripthash = bytes.fromhex(address_to_scripthash(funding_address))
         nonce = funding_scripthash[0:12]
         # note: we are only using chacha20 instead of chacha20+poly1305 to save onchain space
@@ -1471,7 +1473,7 @@ class LNWallet(LNWorker):
         tx.locktime = get_locktime_for_new_transaction(self.network, include_random_component=False)
         return tx
 
-    def suggest_funding_amount(self, amount_to_pay, coins) -> Tuple[int, int] | None:
+    def suggest_funding_amount(self, amount_to_pay: int, coins: Sequence[PartialTxInput]) -> Tuple[int, int] | None:
         """ whether we can pay amount_sat after opening a new channel"""
         num_sats_can_send = int(self.num_sats_can_send())
         lightning_needed = amount_to_pay - num_sats_can_send
@@ -2267,7 +2269,7 @@ class LNWallet(LNWorker):
         timestamp = int(time.time())
         needs_jit: bool = self.receive_requires_jit_channel(amount_msat)
         routing_hints = self.calc_routing_hints_for_invoice(amount_msat, channels=channels, needs_jit=needs_jit)
-        self.logger.info(f"creating bolt11 invoice with routing_hints: {routing_hints}, jit: {needs_jit}, sat: {amount_msat or 0 // 1000}")
+        self.logger.info(f"creating bolt11 invoice with routing_hints: {routing_hints}, jit: {needs_jit}, sat: {(amount_msat or 0) // 1000}")
         invoice_features = self.features.for_invoice()
         if not self.uses_trampoline():
             invoice_features &= ~ LnFeatures.OPTION_TRAMPOLINE_ROUTING_OPT_ELECTRUM
