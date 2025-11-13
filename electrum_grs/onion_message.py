@@ -112,7 +112,7 @@ def create_blinded_path(
 
     blinded_path = {
         'first_node_id': introduction_point,
-        'blinding': blinding,
+        'first_path_key': blinding,
         'num_hops': len(onionmsg_hops),
         'path': onionmsg_hops
     }
@@ -218,7 +218,7 @@ def send_onion_message_to(
 
             if lnwallet.node_keypair.pubkey == introduction_point:
                 # blinded path introduction point is me
-                our_blinding = blinded_path['blinding']
+                our_blinding = blinded_path['first_path_key']
                 our_payload = blinded_path['path'][0]
                 remaining_blinded_path = blinded_path['path'][1:]
                 assert len(remaining_blinded_path) > 0, 'sending to myself?'
@@ -234,26 +234,29 @@ def send_onion_message_to(
                 assert peer, 'next_node_id not a peer'
 
                 # blinding override?
-                next_blinding_override = recipient_data.get('next_blinding_override')
-                if next_blinding_override:
-                    next_blinding = next_blinding_override.get('blinding')
+                next_path_key_override = recipient_data.get('next_path_key_override')
+                if next_path_key_override:
+                    next_path_key = next_path_key_override.get('path_key')
                 else:
                     # E_i+1=SHA256(E_i||ss_i) * E_i
                     blinding_factor = sha256(our_blinding + shared_secret)
                     blinding_factor_int = int.from_bytes(blinding_factor, byteorder="big")
                     next_public_key_int = ecc.ECPubkey(our_blinding) * blinding_factor_int
-                    next_blinding = next_public_key_int.get_public_key_bytes()
+                    next_path_key = next_public_key_int.get_public_key_bytes()
 
-                blinding = next_blinding
+                path_key = next_path_key
 
             else:
                 # we need a route to introduction point
                 remaining_blinded_path = blinded_path['path']
+                if not isinstance(remaining_blinded_path, list):  # doesn't return list when num items == 1
+                    remaining_blinded_path = [remaining_blinded_path]
+
                 peer = lnwallet.peers.get(introduction_point)
                 # if blinded path introduction point is our direct peer, no need to route-find
                 if peer:
                     # start of blinded path is our peer
-                    blinding = blinded_path['blinding']
+                    path_key = blinded_path['first_path_key']
                 else:
                     path = create_onion_message_route_to(lnwallet, introduction_point)
 
@@ -267,7 +270,7 @@ def send_onion_message_to(
                     path = path[:-1]
 
                     if len(path) == 0:
-                        blinding = blinded_path['blinding']
+                        path_key = blinded_path['first_path_key']
                     else:
                         payment_path_pubkeys = [edge.end_node for edge in path]
                         hop_shared_secrets, blinded_node_ids = get_shared_secrets_along_route(
@@ -281,12 +284,12 @@ def send_onion_message_to(
                             ) for x in path[:-1]
                         ]
 
-                        # final hop pre-ip, add next_blinding_override
+                        # final hop pre-ip, add next_path_key_override
                         final_hop_pre_ip = OnionHopsDataSingle(
                             tlv_stream_name='onionmsg_tlv',
                             blind_fields={
                                 'next_node_id': {'node_id': introduction_point},
-                                'next_blinding_override': {'blinding': blinded_path['blinding']},
+                                'next_path_key_override': {'path_key': blinded_path['first_path_key']},
                             }
                         )
                         hops_data.append(final_hop_pre_ip)
@@ -300,7 +303,7 @@ def send_onion_message_to(
                                 'encrypted_recipient_data': encrypted_recipient_data
                             }
 
-                        blinding = ecc.ECPrivkey(session_key).get_public_key_bytes()
+                        path_key = ecc.ECPrivkey(session_key).get_public_key_bytes()
 
             # append (remaining) blinded path and payload
             blinded_path_blinded_ids = []
@@ -317,7 +320,7 @@ def send_onion_message_to(
             payment_path_pubkeys = blinded_node_ids + blinded_path_blinded_ids
             hop_shared_secrets, _ = get_shared_secrets_along_route(payment_path_pubkeys, session_key)
             encrypt_onionmsg_tlv_hops_data(hops_data, hop_shared_secrets)
-            packet = new_onion_packet(payment_path_pubkeys, session_key, hops_data)
+            packet = new_onion_packet(payment_path_pubkeys, session_key, hops_data, onion_message=True)
             packet_b = packet.to_bytes()
 
     else:  # node pubkey
@@ -360,11 +363,11 @@ def send_onion_message_to(
         packet = new_onion_packet(blinded_node_ids, session_key, hops_data)
         packet_b = packet.to_bytes()
 
-        blinding = ecc.ECPrivkey(session_key).get_public_key_bytes()
+        path_key = ecc.ECPrivkey(session_key).get_public_key_bytes()
 
     peer.send_message(
         "onion_message",
-        blinding=blinding,
+        path_key=path_key,
         len=len(packet_b),
         onion_message_packet=packet_b
     )
@@ -696,6 +699,11 @@ class OnionMessageManager(Logger):
             self.logger.debug('dummy hop')
             is_dummy_hop = True
         else:
+            # not a dummy hop, check if we are configured to forward
+            if not self.network.config.EXPERIMENTAL_LN_FORWARD_PAYMENTS:
+                self.logger.info(
+                    'onion_message dropped (not forwarding due to lightning_forward_payments config option disabled')
+                return
             # is next_node one of our peers?
             next_peer = self.lnwallet.peers.get(next_node_id)
             if not next_peer:
@@ -703,27 +711,27 @@ class OnionMessageManager(Logger):
                 return
 
         # blinding override?
-        next_blinding_override = recipient_data.get('next_blinding_override')
-        if next_blinding_override:
-            next_blinding = next_blinding_override.get('blinding')
+        next_path_key_override = recipient_data.get('next_path_key_override')
+        if next_path_key_override:
+            next_path_key = next_path_key_override.get('path_key')
         else:
             # E_i+1=SHA256(E_i||ss_i) * E_i
             blinding_factor = sha256(blinding + shared_secret)
             blinding_factor_int = int.from_bytes(blinding_factor, byteorder="big")
             next_public_key_int = ecc.ECPubkey(blinding) * blinding_factor_int
-            next_blinding = next_public_key_int.get_public_key_bytes()
+            next_path_key = next_public_key_int.get_public_key_bytes()
 
         if is_dummy_hop:
-            self.process_onion_message_packet(next_blinding, onion_packet)
+            self.process_onion_message_packet(next_path_key, onion_packet)
             return
 
-        self.submit_forward(onion_packet=onion_packet, blinding=next_blinding, node_id=next_node_id)
+        self.submit_forward(onion_packet=onion_packet, blinding=next_path_key, node_id=next_node_id)
 
     def on_onion_message(self, payload: dict) -> None:
         """handle arriving onion_message."""
-        blinding = payload.get('blinding')
-        if not blinding:
-            self.logger.error('missing blinding')
+        path_key = payload.get('path_key')
+        if not path_key:
+            self.logger.error('missing path_key')
             return
         packet = payload.get('onion_message_packet')
         if payload.get('len', 0) != len(packet):
@@ -733,11 +741,11 @@ class OnionMessageManager(Logger):
         self.logger.debug('handling onion message')
 
         onion_packet = OnionPacket.from_bytes(packet)
-        self.process_onion_message_packet(blinding, onion_packet)
+        self.process_onion_message_packet(path_key, onion_packet)
 
     def process_onion_message_packet(self, blinding: bytes, onion_packet: OnionPacket) -> None:
         our_privkey = blinding_privkey(self.lnwallet.node_keypair.privkey, blinding)
-        processed_onion_packet = process_onion_packet(onion_packet, our_privkey, tlv_stream_name='onionmsg_tlv')
+        processed_onion_packet = process_onion_packet(onion_packet, our_privkey, is_onion_message=True, tlv_stream_name='onionmsg_tlv')
         payload = processed_onion_packet.hop_data.payload
 
         self.logger.debug(f'onion peeled: {processed_onion_packet!r}')
@@ -758,7 +766,5 @@ class OnionMessageManager(Logger):
 
         if processed_onion_packet.are_we_final:
             self.on_onion_message_received(recipient_data, payload)
-        elif self.network.config.EXPERIMENTAL_LN_FORWARD_PAYMENTS:
-            self.on_onion_message_forward(recipient_data, processed_onion_packet.next_packet, blinding, shared_secret)
         else:
-            self.logger.info('onion_message dropped')
+            self.on_onion_message_forward(recipient_data, processed_onion_packet.next_packet, blinding, shared_secret)
