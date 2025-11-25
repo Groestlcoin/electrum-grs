@@ -13,15 +13,13 @@ from electrum_ecc import ECPrivkey
 from electrum_grs import SimpleConfig
 from electrum_grs.lnmsg import decode_msg, OnionWireSerializer
 from electrum_grs.lnonion import (
-    OnionHopsDataSingle, OnionPacket,
-    process_onion_packet, get_bolt04_onion_key, encrypt_onionmsg_data_tlv,
-    get_shared_secrets_along_route, new_onion_packet, ONION_MESSAGE_LARGE_SIZE,
-    HOPS_DATA_SIZE, InvalidPayloadSize)
+    OnionHopsDataSingle, OnionPacket, process_onion_packet, get_bolt04_onion_key, encrypt_onionmsg_data_tlv,
+    get_shared_secrets_along_route, new_onion_packet, ONION_MESSAGE_LARGE_SIZE, HOPS_DATA_SIZE, InvalidPayloadSize,
+    encrypt_hops_recipient_data)
 from electrum_grs.crypto import get_ecdh, privkey_to_pubkey
 from electrum_grs.lnutil import LnFeatures, Keypair
 from electrum_grs.onion_message import (
-    blinding_privkey, create_blinded_path, encrypt_onionmsg_tlv_hops_data,
-    OnionMessageManager, NoRouteFound, Timeout
+    blinding_privkey, create_blinded_path,OnionMessageManager, NoRouteFound, Timeout
 )
 from electrum_grs.util import bfh, read_json_file, OldTaskGroup, get_asyncio_loop
 from electrum_grs.logging import console_stderr_handler
@@ -104,7 +102,7 @@ class TestOnionMessage(ElectrumTestCase):
             )
         ]
 
-        encrypt_onionmsg_tlv_hops_data(hops_data, hop_shared_secrets)
+        encrypt_hops_recipient_data('onionmsg_tlv', hops_data, hop_shared_secrets)
         packet = new_onion_packet(blinded_node_ids, SESSION_KEY, hops_data, onion_message=True)
         self.assertEqual(packet.to_bytes(), ONION_MESSAGE_PACKET)
 
@@ -126,18 +124,19 @@ class TestOnionMessage(ElectrumTestCase):
                 ),
             ]
         hops_data = hops_data_for_message('short_message')  # fit in HOPS_DATA_SIZE
-        encrypt_onionmsg_tlv_hops_data(hops_data, hop_shared_secrets)
+        encrypt_hops_recipient_data('onionmsg_tlv', hops_data, hop_shared_secrets)
         packet = new_onion_packet(blinded_node_ids, SESSION_KEY, hops_data, onion_message=True)
         self.assertEqual(len(packet.to_bytes()), HOPS_DATA_SIZE + 66)
 
         hops_data = hops_data_for_message('A' * HOPS_DATA_SIZE)  # fit in ONION_MESSAGE_LARGE_SIZE
-        encrypt_onionmsg_tlv_hops_data(hops_data, hop_shared_secrets)
+        encrypt_hops_recipient_data('onionmsg_tlv', hops_data, hop_shared_secrets)
         packet = new_onion_packet(blinded_node_ids, SESSION_KEY, hops_data, onion_message=True)
 
         self.assertEqual(len(packet.to_bytes()), ONION_MESSAGE_LARGE_SIZE + 66)
 
         hops_data = hops_data_for_message('A' * ONION_MESSAGE_LARGE_SIZE)  # does not fit in ONION_MESSAGE_LARGE_SIZE
-        encrypt_onionmsg_tlv_hops_data(hops_data, hop_shared_secrets)
+        encrypt_hops_recipient_data('onionmsg_tlv', hops_data, hop_shared_secrets)
+
         with self.assertRaises(InvalidPayloadSize):
             new_onion_packet(blinded_node_ids, SESSION_KEY, hops_data, onion_message=True)
 
@@ -199,7 +198,7 @@ class TestOnionMessage(ElectrumTestCase):
 
         self.assertEqual(pubkey, rp['first_node_id'])
         self.assertEqual(bfh('022ed557f5ad336b31a49857e4e9664954ac33385aa20a93e2d64bfe7f08f51277'), rp['first_path_key'])
-        self.assertEqual(1, rp['num_hops'])
+        self.assertEqual(b"\x01", rp['num_hops'])
         self.assertEqual([{
             'blinded_node_id': bfh('031e5d91e6c417f6e8c16d1086db1887edef7be9334f5e744d04edb8da7507481e'),
             'enclen': 20,
@@ -261,7 +260,7 @@ class TestOnionMessage(ElectrumTestCase):
             )
         payment_path_pubkeys = blinded_node_ids + blinded_path_blinded_ids
         hop_shared_secrets, _ = get_shared_secrets_along_route(payment_path_pubkeys, SESSION_KEY)
-        encrypt_onionmsg_tlv_hops_data(hops_data, hop_shared_secrets)
+        encrypt_hops_recipient_data('onionmsg_tlv', hops_data, hop_shared_secrets)
         packet = new_onion_packet(payment_path_pubkeys, SESSION_KEY, hops_data, onion_message=True)
         self.assertEqual(packet.to_bytes(), ONION_MESSAGE_PACKET)
 

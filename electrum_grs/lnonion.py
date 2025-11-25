@@ -25,6 +25,7 @@
 
 import io
 import hashlib
+from functools import cached_property
 from typing import Sequence, List, Tuple, NamedTuple, TYPE_CHECKING, Dict, Any, Optional, Union, Mapping
 from enum import IntEnum
 from dataclasses import dataclass, field, replace
@@ -157,6 +158,10 @@ class OnionPacket:
             version=b[0],
         )
 
+    @cached_property
+    def onion_hash(self) -> bytes:
+        return sha256(self.to_bytes())
+
 
 def get_bolt04_onion_key(key_type: bytes, secret: bytes) -> bytes:
     if key_type not in (b'rho', b'mu', b'um', b'ammag', b'pad', b'blinded_node_id'):
@@ -276,6 +281,32 @@ def decrypt_onionmsg_data_tlv(*, shared_secret: bytes, encrypted_recipient_data:
     return recipient_data
 
 
+def encrypt_hops_recipient_data(
+        tlv_stream_name: str,
+        hops_data: List[OnionHopsDataSingle],
+        hop_shared_secrets: Sequence[bytes]
+) -> None:
+    """encrypt unencrypted encrypted_recipient_data for hops with blind_fields.
+
+       NOTE: contents of payload.encrypted_recipient_data is slightly different for 'payload'
+       vs 'oniomsg_tlv' tlv_stream_names, so we map to the correct key here based on tlv_stream_name.
+       We can also change onion_wire.csv to use the same key, but as we import that from specs it might
+       regress in the future, so I rather make it explicit in code here.
+    """
+    # key naming payload TLV vs onionmsg_tlv TLV
+    erd_key = 'encrypted_recipient_data' if tlv_stream_name == 'onionmsg_tlv' else 'encrypted_data'
+
+    num_hops = len(hops_data)
+    for i in range(num_hops):
+        if hops_data[i].tlv_stream_name == tlv_stream_name and 'encrypted_recipient_data' not in hops_data[i].payload:
+            # construct encrypted_recipient_data from blind_fields
+            encrypted_recipient_data = encrypt_onionmsg_data_tlv(shared_secret=hop_shared_secrets[i], **hops_data[i].blind_fields)
+            # work around immutablility of OnionHopsDataSingle
+            hop_payload = {'encrypted_recipient_data': {erd_key: encrypted_recipient_data}}
+            hop_payload.update(hops_data[i].payload)
+            hops_data[i] = OnionHopsDataSingle(tlv_stream_name=hops_data[i].tlv_stream_name, payload=hop_payload, blind_fields=hops_data[i].blind_fields)
+
+
 def calc_hops_data_for_payment(
         route: 'LNPaymentRoute',
         amount_msat: int,  # that final recipient receives
@@ -289,20 +320,19 @@ def calc_hops_data_for_payment(
     """
     if len(route) > NUM_MAX_EDGES_IN_PAYMENT_PATH:
         raise PaymentFailure(f"too long route ({len(route)} edges)")
-    # payload that will be seen by the last hop:
     amt = amount_msat
     cltv_abs = final_cltv_abs
+    # payload that will be seen by the last hop:
+    # for multipart payments we need to tell the receiver about the total and
+    # partial amounts
     hop_payload = {
         "amt_to_forward": {"amt_to_forward": amt},
         "outgoing_cltv_value": {"outgoing_cltv_value": cltv_abs},
-    }
-    # for multipart payments we need to tell the receiver about the total and
-    # partial amounts
-    hop_payload["payment_data"] = {
-        "payment_secret": payment_secret,
-        "total_msat": total_msat,
-        "amount_msat": amt
-    }
+        "payment_data": {
+            "payment_secret": payment_secret,
+            "total_msat": total_msat,
+            "amount_msat": amt,
+        }}
     hops_data = [OnionHopsDataSingle(payload=hop_payload)]
     # payloads, backwards from last hop (but excluding the first edge):
     for edge_index in range(len(route) - 1, 0, -1):
@@ -360,6 +390,36 @@ class ProcessedOnionPacket(NamedTuple):
     next_packet: OnionPacket
     trampoline_onion_packet: OnionPacket
 
+    @property
+    def amt_to_forward(self) -> Optional[int]:
+        k1 = k2 = 'amt_to_forward'
+        return self._get_from_payload(k1, k2, int)
+
+    @property
+    def outgoing_cltv_value(self) -> Optional[int]:
+        k1 = k2 = 'outgoing_cltv_value'
+        return self._get_from_payload(k1, k2, int)
+
+    @property
+    def next_chan_scid(self) -> Optional[ShortChannelID]:
+        k1 = k2 = 'short_channel_id'
+        return self._get_from_payload(k1, k2, ShortChannelID)
+
+    @property
+    def total_msat(self) -> Optional[int]:
+        return self._get_from_payload('payment_data', 'total_msat', int)
+
+    @property
+    def payment_secret(self) -> Optional[bytes]:
+        return self._get_from_payload('payment_data', 'payment_secret', bytes)
+
+    def _get_from_payload(self, k1: str, k2: str, res_type: type):
+        try:
+            result = self.hop_data.payload[k1][k2]
+            return res_type(result)
+        except Exception:
+            return None
+
 
 # TODO replay protection
 def process_onion_packet(
@@ -396,6 +456,8 @@ def process_onion_packet(
     # trampoline
     trampoline_onion_packet = hop_data.payload.get('trampoline_onion_packet')
     if trampoline_onion_packet:
+        if is_trampoline:
+            raise Exception("found nested trampoline inside trampoline")
         top_version = trampoline_onion_packet.get('version')
         top_public_key = trampoline_onion_packet.get('public_key')
         top_hops_data = trampoline_onion_packet.get('hops_data')

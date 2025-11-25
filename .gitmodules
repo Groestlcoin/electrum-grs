@@ -1,9 +1,6 @@
 [submodule "electrum_grs/locale"]
 	path = electrum_grs/locale
 	url = https://github.com/spesmilo/electrum-locale
-[submodule "electrum_grs/www"]
-	path = electrum_grs/plugins/payserver/www
-	url = https://github.com/Groestlcoin/electrum-http.git
 [submodule "electrum_grs/plugins/keepkey/keepkeylib"]
 	path = electrum_grs/plugins/keepkey/keepkeylib
 	url = https://github.com/spesmilo/electrum-keepkeylib.git
