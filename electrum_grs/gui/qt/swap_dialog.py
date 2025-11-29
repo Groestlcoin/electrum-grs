@@ -9,16 +9,17 @@ from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QHeaderView
 from electrum_aionostr.util import from_nip19
 
 from electrum_grs.i18n import _
-from electrum_grs.util import NotEnoughFunds, NoDynamicFeeEstimates, UserCancelled
+from electrum_grs.util import NotEnoughFunds, NoDynamicFeeEstimates, UserCancelled, trigger_callback
 from electrum_grs.bitcoin import DummyAddress
 from electrum_grs.transaction import PartialTxOutput, PartialTransaction
 from electrum_grs.fee_policy import FeePolicy
-from electrum_grs.submarine_swaps import NostrTransport, pubkey_to_rgb_color
+from electrum_grs.submarine_swaps import NostrTransport
 
 from electrum_grs.gui import messages
 from . import util
 from .util import (WindowModalDialog, Buttons, OkButton, CancelButton,
-                   EnterButton, ColorScheme, WWLabel, read_QIcon, IconLabel, char_width_in_lineedit)
+                   EnterButton, ColorScheme, WWLabel, read_QIcon, IconLabel, char_width_in_lineedit,
+                   pubkey_to_q_icon)
 from .util import qt_event_listener, QtEventListener
 from .amountedit import BTCAmountEdit
 from .fee_slider import FeeSlider, FeeComboBox
@@ -42,6 +43,43 @@ ROLE_NPUB = Qt.ItemDataRole.UserRole + 1000
 class InvalidSwapParameters(Exception): pass
 
 
+class SwapProvidersButton(QPushButton):
+
+    def __init__(self, transport_getter, config, main_window):
+        """parent must have a transport() method"""
+        QPushButton.__init__(self)
+        self.config = config
+        self.transport_getter = transport_getter
+        self.main_window = main_window
+        self.clicked.connect(self.choose_swap_server)
+        self.update()
+
+    def update(self):
+        transport = self.transport_getter()
+        if not isinstance(transport, NostrTransport):
+            # HTTPTransport or no Network, not showing server selection button
+            self.setEnabled(False)
+            self.setVisible(False)
+            return
+        self.setEnabled(True)
+        self.setVisible(True)
+        offer_count = len(transport.get_recent_offers())
+        button_text = f' {offer_count} ' + (_('swap providers') if offer_count != 1 else _('swap provider'))
+        self.setText(button_text)
+        # update icon
+        if self.config.SWAPSERVER_NPUB:
+            pubkey = from_nip19(self.config.SWAPSERVER_NPUB)['object'].hex()
+            self.setIcon(pubkey_to_q_icon(pubkey))
+
+    def choose_swap_server(self) -> None:
+        transport = self.transport_getter()
+        assert isinstance(transport, NostrTransport), transport
+        self.main_window.choose_swapserver_dialog(transport)  # type: ignore
+        self.update()
+        trigger_callback('swap_provider_changed')
+
+
+
 class SwapDialog(WindowModalDialog, QtEventListener):
 
     def __init__(
@@ -62,12 +100,8 @@ class SwapDialog(WindowModalDialog, QtEventListener):
         self.is_reverse = is_reverse if is_reverse is not None else True
         vbox = QVBoxLayout(self)
 
-        self.server_button = QPushButton()
-        self.set_server_button_text(len(transport.get_recent_offers()) \
-            if not self.config.SWAPSERVER_URL and isinstance(transport, NostrTransport) else 0
-        )
-        self.server_button.clicked.connect(lambda: self.choose_swap_server(transport))
-        self.server_button.setEnabled(not self.config.SWAPSERVER_URL)
+        self.transport = transport
+        self.server_button = SwapProvidersButton(lambda: self.transport, self.config, self.window)
         self.description_label = WWLabel(self.get_description())
         self.send_amount_e = BTCAmountEdit(self.window.get_decimal_point)
         self.recv_amount_e = BTCAmountEdit(self.window.get_decimal_point)
@@ -149,17 +183,15 @@ class SwapDialog(WindowModalDialog, QtEventListener):
 
     @qt_event_listener
     def on_event_fee_histogram(self, *args):
-        self.on_send_edited()
-        self.on_recv_edited()
+        self.update_send_receive()
 
     @qt_event_listener
     def on_event_fee(self, *args):
-        self.on_send_edited()
-        self.on_recv_edited()
+        self.update_send_receive()
 
     @qt_event_listener
     def on_event_swap_offers_changed(self, recent_offers: Sequence['SwapOffer']):
-        self.set_server_button_text(len(recent_offers))
+        self.server_button.update()
         if not self.ok_button.isEnabled():
             # only update the dialog with the new offer if the user hasn't entered an amount yet.
             # if the user has already entered an amount we prefer the swap to fail due to outdated
@@ -167,9 +199,10 @@ class SwapDialog(WindowModalDialog, QtEventListener):
             # due to an update happening just before the user initiated the swap
             self.update()
 
-    def set_server_button_text(self, offer_count: int):
-        button_text = f' {offer_count} ' + (_('providers') if offer_count != 1 else _('provider'))
-        self.server_button.setText(button_text)
+    @qt_event_listener
+    def on_event_swap_provider_changed(self):
+        self.update()
+        self.update_send_receive()
 
     def timer_actions(self):
         if self.needs_tx_update:
@@ -189,10 +222,7 @@ class SwapDialog(WindowModalDialog, QtEventListener):
         self.config.FEE_POLICY = self.fee_policy.get_descriptor()
         if not self.is_reverse:
             self.fee_target_label.setText(self.fee_policy.get_target_text())
-        if self.send_follows:
-            self.on_recv_edited()
-        else:
-            self.on_send_edited()
+        self.update_send_receive()
         self.update()
 
     def _set_fee_slider_visibility(self, *, is_visible: bool):
@@ -276,6 +306,9 @@ class SwapDialog(WindowModalDialog, QtEventListener):
         self.send_follows = True
         self.needs_tx_update = True
 
+    def update_send_receive(self):
+        self.on_recv_edited() if self.send_follows else self.on_send_edited()
+
     def update(self):
         sm = self.swap_manager
         w_base_unit = self.window.base_unit()
@@ -299,9 +332,6 @@ class SwapDialog(WindowModalDialog, QtEventListener):
         self.server_fee_label.setText(server_fee_str)
         self.server_fee_label.repaint()  # macOS hack for #6269
         self.needs_tx_update = True
-        # update icon
-        pubkey = from_nip19(self.config.SWAPSERVER_NPUB)['object'].hex() if self.config.SWAPSERVER_NPUB else ''
-        self.server_button.setIcon(SwapServerDialog._pubkey_to_q_icon(pubkey))
 
     def get_client_swap_limits_sat(self) -> Tuple[int, int]:
         """Returns the (min, max) client swap limits in sat."""
@@ -453,12 +483,6 @@ class SwapDialog(WindowModalDialog, QtEventListener):
             capacityType="receiving" if self.is_reverse else "sending",
         )
 
-    def choose_swap_server(self, transport: 'SwapServerTransport') -> None:
-        self.window.choose_swapserver_dialog(transport)  # type: ignore
-        self.update()
-        self.on_send_edited()
-        self.on_recv_edited()
-
 
 class SwapServerDialog(WindowModalDialog, QtEventListener):
 
@@ -531,13 +555,6 @@ class SwapServerDialog(WindowModalDialog, QtEventListener):
             labels[self.Columns.LAST_SEEN] = age(x.timestamp)
             item = QTreeWidgetItem(labels)
             item.setData(self.Columns.PUBKEY, ROLE_NPUB, x.server_npub)
-            item.setIcon(self.Columns.PUBKEY, self._pubkey_to_q_icon(x.server_pubkey))
+            item.setIcon(self.Columns.PUBKEY, pubkey_to_q_icon(x.server_pubkey))
             items.append(item)
         self.servers_list.insertTopLevelItems(0, items)
-
-    @staticmethod
-    def _pubkey_to_q_icon(server_pubkey: str) -> QIcon:
-        color = QColor(*pubkey_to_rgb_color(server_pubkey))
-        color_pixmap = QPixmap(100, 100)
-        color_pixmap.fill(color)
-        return QIcon(color_pixmap)

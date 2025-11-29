@@ -62,7 +62,7 @@ from electrum_grs.util import (format_time, UserCancelled, profiler, bfh, Invali
 from electrum_grs.bip21 import BITCOIN_BIP21_URI_SCHEME
 from electrum_grs.payment_identifier import PaymentIdentifier
 from electrum_grs.invoices import PR_PAID, Invoice
-from electrum_grs.transaction import (Transaction, PartialTxInput,
+from electrum_grs.transaction import (Transaction, PartialTxInput, TxOutput,
                                   PartialTransaction, PartialTxOutput)
 from electrum_grs.wallet import (Multisig_Wallet, Abstract_Wallet,
                              sweep_preparations, InternalAddressCorruption,
@@ -1005,7 +1005,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         return self.config.format_fee_rate(fee_rate)
 
     def get_decimal_point(self):
-        return self.config.get_decimal_point()
+        return self.config.BTC_AMOUNTS_DECIMAL_POINT
 
     def base_unit(self):
         return self.config.get_base_unit()
@@ -1504,14 +1504,28 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                 return
         # we need to know the fee before we broadcast, because the txid is required
         make_tx = self.mktx_for_open_channel(funding_sat=funding_sat, node_id=node_id)
-        funding_tx, _ = self.confirm_tx_dialog(make_tx, funding_sat, allow_preview=False)
+        funding_tx, _, _ = self.confirm_tx_dialog(make_tx, funding_sat, allow_preview=False)
         if not funding_tx:
             return
         self._open_channel(connect_str, funding_sat, push_amt, funding_tx)
 
-    def confirm_tx_dialog(self, make_tx, output_value, *, allow_preview=True, batching_candidates=None) -> tuple[Optional[PartialTransaction], bool]:
-        d = ConfirmTxDialog(window=self, make_tx=make_tx, output_value=output_value, allow_preview=allow_preview, batching_candidates=batching_candidates)
-        return d.run(), d.is_preview
+    def confirm_tx_dialog(
+        self,
+        make_tx,
+        output_value, *,
+        payee_outputs: Optional[list[TxOutput]] = None,
+        allow_preview=True,
+        batching_candidates=None,
+    ) -> tuple[Optional[PartialTransaction], bool, bool]:
+        d = ConfirmTxDialog(
+            window=self,
+            make_tx=make_tx,
+            output_value=output_value,
+            payee_outputs=payee_outputs,
+            allow_preview=allow_preview,
+            batching_candidates=batching_candidates,
+        )
+        return d.run(), d.is_preview, d.did_swap
 
     @protected
     def _open_channel(self, connect_str, funding_sat, push_amt, funding_tx, password):
@@ -2706,6 +2720,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         run_hook('close_settings_dialog')
         if d.need_restart:
             self.show_warning(_('Please restart Electrum to activate the new GUI settings'), title=_('Success'))
+        else:
+            # Some values might need to be updated if settings have changed.
+            # For example 'Can send' in the lightning tab will change if the fees config is changed.
+            self.refresh_tabs()
 
     def _show_closing_warnings(self) -> bool:
         """Show any closing warnings and return True if the user chose to quit anyway."""

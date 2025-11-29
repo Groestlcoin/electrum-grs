@@ -97,7 +97,7 @@ class SettingsDialog(QDialog, QtEventListener):
         nz_label = HelpLabel.from_configvar(self.config.cv.BTC_AMOUNTS_FORCE_NZEROS_AFTER_DECIMAL_POINT)
         nz = QSpinBox()
         nz.setMinimum(0)
-        nz.setMaximum(self.config.decimal_point)
+        nz.setMaximum(self.config.BTC_AMOUNTS_DECIMAL_POINT)
         nz.setValue(self.config.num_zeros)
         if not self.config.cv.BTC_AMOUNTS_FORCE_NZEROS_AFTER_DECIMAL_POINT.is_modifiable():
             for w in [nz, nz_label]: w.setEnabled(False)
@@ -146,10 +146,6 @@ class SettingsDialog(QDialog, QtEventListener):
             pos = lnfee_slider.sliderPosition()
             fee_val = lnfee_map[pos]
             lnfee_update_vlabel(fee_val)
-
-        def lnfee_slider_released():
-            pos = lnfee_slider.sliderPosition()
-            fee_val = lnfee_map[pos]
             self.config.LIGHTNING_PAYMENT_FEE_MAX_MILLIONTHS = fee_val
 
         lnfee_slider = QSlider(Qt.Orientation.Horizontal)
@@ -163,7 +159,6 @@ class SettingsDialog(QDialog, QtEventListener):
         lnfee_vlabel = QLabel("")
         lnfee_update_vlabel(self.config.LIGHTNING_PAYMENT_FEE_MAX_MILLIONTHS)
         lnfee_slider.valueChanged.connect(lnfee_slider_moved)
-        lnfee_slider.sliderReleased.connect(lnfee_slider_released)
         lnfee_hbox = QHBoxLayout()
         lnfee_hbox.setContentsMargins(0, 0, 0, 0)
         lnfee_hbox.addWidget(lnfee_vlabel)
@@ -205,7 +200,7 @@ class SettingsDialog(QDialog, QtEventListener):
             if self.config.get_base_unit() == unit_result:
                 return
             self.config.set_base_unit(unit_result)
-            nz.setMaximum(self.config.decimal_point)
+            nz.setMaximum(self.config.BTC_AMOUNTS_DECIMAL_POINT)
             self.app.refresh_tabs_signal.emit()
             self.app.update_status_signal.emit()
             self.app.refresh_amount_edits_signal.emit()

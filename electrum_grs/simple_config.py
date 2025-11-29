@@ -217,12 +217,10 @@ class SimpleConfig(Logger):
         self._check_dependent_keys()
 
         # units and formatting
-        # FIXME is this duplication (dp, nz, post_sat, thou_sep) due to performance reasons??
-        self.decimal_point = self.BTC_AMOUNTS_DECIMAL_POINT
         try:
-            decimal_point_to_base_unit_name(self.decimal_point)
+            decimal_point_to_base_unit_name(self.BTC_AMOUNTS_DECIMAL_POINT)
         except UnknownBaseUnit:
-            self.decimal_point = DECIMAL_POINT_DEFAULT
+            self.BTC_AMOUNTS_DECIMAL_POINT = DECIMAL_POINT_DEFAULT
         self.num_zeros = self.BTC_AMOUNTS_FORCE_NZEROS_AFTER_DECIMAL_POINT
         self.amt_precision_post_satoshi = self.BTC_AMOUNTS_PREC_POST_SAT
         self.amt_add_thousands_sep = self.BTC_AMOUNTS_ADD_THOUSANDS_SEP
@@ -530,7 +528,7 @@ class SimpleConfig(Logger):
         return format_satoshis(
             amount_sat,
             num_zeros=self.num_zeros,
-            decimal_point=self.decimal_point,
+            decimal_point=self.BTC_AMOUNTS_DECIMAL_POINT,
             is_diff=is_diff,
             whitespaces=whitespaces,
             precision=precision,
@@ -545,15 +543,11 @@ class SimpleConfig(Logger):
         return format_fee_satoshis(fee_rate/1000, num_zeros=self.num_zeros) + f" {util.UI_UNIT_NAME_FEERATE_SAT_PER_VBYTE}"
 
     def get_base_unit(self):
-        return decimal_point_to_base_unit_name(self.decimal_point)
+        return decimal_point_to_base_unit_name(self.BTC_AMOUNTS_DECIMAL_POINT)
 
     def set_base_unit(self, unit):
         assert unit in base_units.keys()
-        self.decimal_point = base_unit_name_to_decimal_point(unit)
-        self.BTC_AMOUNTS_DECIMAL_POINT = self.decimal_point
-
-    def get_decimal_point(self):
-        return self.decimal_point
+        self.BTC_AMOUNTS_DECIMAL_POINT = base_unit_name_to_decimal_point(unit)
 
     def get_nostr_relays(self) -> Sequence[str]:
         relays = []
@@ -687,6 +681,13 @@ class SimpleConfig(Logger):
         'send_change_to_lightning', default=False, type_=bool,
         short_desc=lambda: _('Send change to Lightning'),
         long_desc=lambda: _('If possible, send the change of this transaction to your channels, with a submarine swap'),
+    )
+    WALLET_ENABLE_SUBMARINE_PAYMENTS = ConfigVar(
+        'enable_submarine_payments', default=False, type_=bool,
+        short_desc=lambda: _('Submarine Payments'),
+        long_desc=lambda: _('Send onchain payments directly from your Lightning balance with a '
+                            'submarine swap. This allows you to do onchain transactions even if your entire '
+                            'wallet balance is inside Lightning channels.')
     )
     WALLET_FREEZE_REUSED_ADDRESS_UTXOS = ConfigVar(
         'wallet_freeze_reused_address_utxos', default=False, type_=bool,
