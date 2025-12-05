@@ -70,7 +70,7 @@ from .wallet import (
 )
 from .address_synchronizer import TX_HEIGHT_LOCAL
 from .mnemonic import Mnemonic
-from .lnutil import (channel_id_from_funding_tx, LnFeatures, SENT, MIN_FINAL_CLTV_DELTA_ACCEPTED,
+from .lnutil import (channel_id_from_funding_tx, LnFeatures, SENT, RECEIVED, MIN_FINAL_CLTV_DELTA_ACCEPTED,
                      PaymentFeeBudget, NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE)
 from .plugin import run_hook, DeviceMgr, Plugins
 from .version import ELECTRUM_VERSION
@@ -806,6 +806,8 @@ class Commands(Logger):
         ret["certifi.version"] = certifi.__version__
         import dns
         ret["dnspython.version"] = dns.__version__
+        import ssl
+        ret["openssl.version"] = ssl.OPENSSL_VERSION
 
         return ret
 
@@ -868,12 +870,10 @@ class Commands(Logger):
         if x is None:
             return None
         out = await wallet.contacts.resolve(x)
-        if out.get('type') == 'openalias' and self.nocheck is False and out.get('validated') is False:
-            raise UserFacingException(f"cannot verify alias: {x}")
         return out['address']
 
     @command('n')
-    async def sweep(self, privkey, destination, fee=None, feerate=None, nocheck=False, imax=100):
+    async def sweep(self, privkey, destination, fee=None, feerate=None, imax=100):
         """
         Sweep private keys. Returns a transaction that spends UTXOs from
         privkey to a destination address. The transaction will not be broadcast.
@@ -883,12 +883,10 @@ class Commands(Logger):
         arg:decimal:fee:Transaction fee (absolute, in GRS)
         arg:decimal:feerate:Transaction fee rate (in gro/vbyte)
         arg:int:imax:Maximum number of inputs
-        arg:bool:nocheck:Do not verify aliases
         """
         from .wallet import sweep
         fee_policy = self._get_fee_policy(fee, feerate)
         privkeys = privkey.split()
-        self.nocheck = nocheck
         #dest = self._resolver(destination)
         tx = await sweep(
             privkeys,
@@ -940,7 +938,7 @@ class Commands(Logger):
 
     @command('wp')
     async def payto(self, destination, amount, fee=None, feerate=None, from_addr=None, from_coins=None, change_addr=None,
-                    nocheck=False, unsigned=False, rbf=True, password=None, locktime=None, addtransaction=False, wallet: Abstract_Wallet = None):
+                    unsigned=False, rbf=True, password=None, locktime=None, addtransaction=False, wallet: Abstract_Wallet = None):
         """Create an on-chain transaction.
 
         arg:str:destination:Groestlcoin address, contact or alias
@@ -953,7 +951,6 @@ class Commands(Logger):
         arg:bool:addtransaction:Whether transaction is to be used for broadcasting afterwards. Adds transaction to the wallet
         arg:int:locktime:Set locktime block number
         arg:bool:unsigned:Do not sign transaction
-        arg:bool:nocheck:Do not verify aliases
         arg:json:from_coins:Source coins (must be in wallet; use sweep to spend from non-wallet address)
         """
         return await self.paytomany(
@@ -963,7 +960,6 @@ class Commands(Logger):
             from_addr=from_addr,
             from_coins=from_coins,
             change_addr=change_addr,
-            nocheck=nocheck,
             unsigned=unsigned,
             rbf=rbf,
             password=password,
@@ -974,7 +970,7 @@ class Commands(Logger):
 
     @command('wp')
     async def paytomany(self, outputs, fee=None, feerate=None, from_addr=None, from_coins=None, change_addr=None,
-                        nocheck=False, unsigned=False, rbf=True, password=None, locktime=None, addtransaction=False, wallet: Abstract_Wallet = None):
+                        unsigned=False, rbf=True, password=None, locktime=None, addtransaction=False, wallet: Abstract_Wallet = None):
         """Create a multi-output transaction.
 
         arg:json:outputs:json list of ["address", "amount in GRS"]
@@ -986,10 +982,8 @@ class Commands(Logger):
         arg:bool:addtransaction:Whether transaction is to be used for broadcasting afterwards. Adds transaction to the wallet
         arg:int:locktime:Set locktime block number
         arg:bool:unsigned:Do not sign transaction
-        arg:bool:nocheck:Do not verify aliases
         arg:json:from_coins:Source coins (must be in wallet; use sweep to spend from non-wallet address)
         """
-        self.nocheck = nocheck
         fee_policy = self._get_fee_policy(fee, feerate)
         domain_addr = from_addr.split(',') if from_addr else None
         domain_coins = from_coins.split(',') if from_coins else None
@@ -1148,7 +1142,11 @@ class Commands(Logger):
 
         arg:str:key:the alias to be retrieved
         """
-        return await wallet.contacts.resolve(key)
+        d = await wallet.contacts.resolve(key)
+        if d.get("type") == "openalias":
+            # we always validate DNSSEC now
+            d["validated"] = True
+        return d
 
     @command('w')
     async def searchcontacts(self, query, wallet: Abstract_Wallet = None):
@@ -1400,7 +1398,7 @@ class Commands(Logger):
         arg:int:min_final_cltv_expiry_delta:Optional min final cltv expiry delta (default: 294 blocks)
         """
         assert len(payment_hash) == 64, f"Invalid payment hash length: {len(payment_hash)} != 64"
-        assert payment_hash not in wallet.lnworker.payment_info, "Payment hash already used!"
+        assert not wallet.lnworker.get_payment_info(bfh(payment_hash), direction=RECEIVED), "Payment hash already used!"
         assert payment_hash not in wallet.lnworker.dont_expire_htlcs, "Payment hash already used!"
         assert wallet.lnworker.get_preimage(bfh(payment_hash)) is None, "Already got a preimage for this payment hash!"
         assert MIN_FINAL_CLTV_DELTA_ACCEPTED < min_final_cltv_expiry_delta < 576, "Use a sane min_final_cltv_expiry_delta value"
@@ -1415,7 +1413,7 @@ class Commands(Logger):
             min_final_cltv_delta=min_final_cltv_expiry_delta,
             exp_delay=expiry,
         )
-        info = wallet.lnworker.get_payment_info(bfh(payment_hash))
+        info = wallet.lnworker.get_payment_info(bfh(payment_hash), direction=RECEIVED)
         lnaddr, invoice = wallet.lnworker.get_bolt11_invoice(
             payment_info=info,
             message=memo,
@@ -1441,12 +1439,11 @@ class Commands(Logger):
         assert len(preimage) == 64, f"Invalid payment_hash length: {len(preimage)} != 64"
         payment_hash: str = crypto.sha256(bfh(preimage)).hex()
         assert payment_hash not in wallet.lnworker._preimages, f"Invoice {payment_hash=} already settled"
-        assert payment_hash in wallet.lnworker.payment_info, \
-            f"Couldn't find lightning invoice for {payment_hash=}"
+        info = wallet.lnworker.get_payment_info(bfh(payment_hash), direction=RECEIVED)
+        assert info, f"Couldn't find lightning invoice for {payment_hash=}"
         assert payment_hash in wallet.lnworker.dont_expire_htlcs, f"Invoice {payment_hash=} not a hold invoice?"
         assert wallet.lnworker.is_complete_mpp(bfh(payment_hash)), \
             f"MPP incomplete, cannot settle hold invoice {payment_hash} yet"
-        info: Optional['PaymentInfo'] = wallet.lnworker.get_payment_info(bfh(payment_hash))
         assert (wallet.lnworker.get_payment_mpp_amount_msat(bfh(payment_hash)) or 0) >= (info.amount_msat or 0)
         wallet.lnworker.save_preimage(bfh(payment_hash), bfh(preimage))
         util.trigger_callback('wallet_updated', wallet)
@@ -1462,13 +1459,13 @@ class Commands(Logger):
 
         arg:str:payment_hash:Payment hash in hex of the hold invoice
         """
-        assert payment_hash in wallet.lnworker.payment_info, \
+        assert wallet.lnworker.get_payment_info(bfh(payment_hash), direction=RECEIVED), \
             f"Couldn't find lightning invoice for payment hash {payment_hash}"
         assert payment_hash not in wallet.lnworker._preimages, "Cannot cancel anymore, preimage already given."
         assert payment_hash in wallet.lnworker.dont_expire_htlcs, f"{payment_hash=} not a hold invoice?"
         # set to PR_UNPAID so it can get deleted
-        wallet.lnworker.set_payment_status(bfh(payment_hash), PR_UNPAID)
-        wallet.lnworker.delete_payment_info(payment_hash)
+        wallet.lnworker.set_payment_status(bfh(payment_hash), PR_UNPAID, direction=RECEIVED)
+        wallet.lnworker.delete_payment_info(payment_hash, direction=RECEIVED)
         wallet.set_label(payment_hash, None)
         del wallet.lnworker.dont_expire_htlcs[payment_hash]
         while wallet.lnworker.is_complete_mpp(bfh(payment_hash)):
@@ -1494,7 +1491,7 @@ class Commands(Logger):
         arg:str:payment_hash:Payment hash in hex of the hold invoice
         """
         assert len(payment_hash) == 64, f"Invalid payment_hash length: {len(payment_hash)} != 64"
-        info: Optional['PaymentInfo'] = wallet.lnworker.get_payment_info(bfh(payment_hash))
+        info: Optional['PaymentInfo'] = wallet.lnworker.get_payment_info(bfh(payment_hash), direction=RECEIVED)
         is_complete_mpp: bool = wallet.lnworker.is_complete_mpp(bfh(payment_hash))
         amount_sat = (wallet.lnworker.get_payment_mpp_amount_msat(bfh(payment_hash)) or 0) // 1000
         result = {
@@ -1516,7 +1513,7 @@ class Commands(Logger):
         elif wallet.lnworker.get_preimage_hex(payment_hash) is not None:
             result["status"] = "settled"
             plist = wallet.lnworker.get_payments(status='settled')[bfh(payment_hash)]
-            _dir, amount_msat, _fee, _ts = wallet.lnworker.get_payment_value(info, plist)
+            _dir, amount_msat, _fee, _ts = wallet.lnworker.get_payment_value(None, plist)
             result["received_amount_sat"] = amount_msat // 1000
             result['preimage'] = wallet.lnworker.get_preimage_hex(payment_hash)
         if info is not None:

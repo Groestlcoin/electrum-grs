@@ -109,6 +109,8 @@ class LNWatcher(Logger, EventListener):
             closing_tx = self.adb.get_transaction(closing_txid)
             if closing_tx:
                 keep_watching = await self.sweep_commitment_transaction(funding_outpoint, closing_tx)
+                if not keep_watching:
+                    self.remove_callback(address)
             else:
                 self.logger.info(f"channel {funding_outpoint} closed by {closing_txid}. still waiting for tx itself...")
                 keep_watching = True
@@ -157,9 +159,6 @@ class LNWatcher(Logger, EventListener):
         chan = self.lnworker.channel_by_txo(funding_outpoint)
         if not chan:
             return False
-        if not chan.need_to_subscribe():
-            return False
-        self.logger.info(f'sweep_commitment_transaction {funding_outpoint}')
         # detect who closed and get information about how to claim outputs
         is_local_ctx, sweep_info_dict = chan.get_ctx_sweep_info(closing_tx)
         # note: we need to keep watching *at least* until the closing tx is deeply mined,

@@ -18,6 +18,7 @@ from electrum_grs.util import (
     NotEnoughFunds, NoDynamicFeeEstimates, parse_max_spend, UserCancelled, ChoiceItem,
     UserFacingException,
 )
+from electrum_grs.lnutil import RECEIVED
 from electrum_grs.invoices import PR_PAID, Invoice, PR_BROADCASTING, PR_BROADCAST
 from electrum_grs.transaction import Transaction, PartialTxInput, PartialTxOutput
 from electrum_grs.network import TxBroadcastError, BestEffortRequestFailed
@@ -979,7 +980,7 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
                 address=None,
             )
             req = self.wallet.get_request(key)
-            info = self.wallet.lnworker.get_payment_info(req.payment_hash)
+            info = self.wallet.lnworker.get_payment_info(req.payment_hash, direction=RECEIVED)
             _lnaddr, b11_invoice = self.wallet.lnworker.get_bolt11_invoice(
                 payment_info=info,
                 message=req.get_message(),
