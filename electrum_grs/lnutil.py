@@ -489,7 +489,10 @@ class LNProtocolWarning(Exception):
 # TODO make some of these values configurable?
 REDEEM_AFTER_DOUBLE_SPENT_DELAY = 30
 
-CHANNEL_OPENING_TIMEOUT = 24*60*60
+# timeout after which we forget incoming channels if the funding tx has no confirmation
+# https://github.com/lightning/bolts/commit/ba00bf8f4cd85f21bacfc03adcafd4acc7d68382
+CHANNEL_OPENING_TIMEOUT_BLOCKS = 2016
+CHANNEL_OPENING_TIMEOUT_SEC = 14*24*60*60  # 2 weeks
 
 # Small capacity channels are problematic for many reasons. As the onchain fees start to become
 # significant compared to the capacity, things start to break down. e.g. the counterparty
@@ -1965,18 +1968,18 @@ del r
 
 
 class ReceivedMPPHtlc(NamedTuple):
-    scid: ShortChannelID
+    channel_id: bytes
     htlc: UpdateAddHtlc
     unprocessed_onion: str
 
     def __repr__(self):
-        return f"{self.scid}, {self.htlc=}, {self.unprocessed_onion[:15]=}..."
+        return f"chan_id={self.channel_id.hex()}, {self.htlc=}, {self.unprocessed_onion[:15]=}..."
 
     @staticmethod
-    def from_tuple(scid, htlc, unprocessed_onion) -> 'ReceivedMPPHtlc':
-        assert is_hex_str(unprocessed_onion) and is_hex_str(scid)
+    def from_tuple(channel_id, htlc, unprocessed_onion) -> 'ReceivedMPPHtlc':
+        assert is_hex_str(unprocessed_onion) and is_hex_str(channel_id)
         return ReceivedMPPHtlc(
-            scid=ShortChannelID(bytes.fromhex(scid)),
+            channel_id=bytes.fromhex(channel_id),
             htlc=UpdateAddHtlc.from_tuple(*htlc),
             unprocessed_onion=unprocessed_onion,
         )
