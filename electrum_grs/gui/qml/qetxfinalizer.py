@@ -11,7 +11,7 @@ from electrum_grs.logging import get_logger
 from electrum_grs.i18n import _
 from electrum_grs.bitcoin import DummyAddress
 from electrum_grs.transaction import PartialTxOutput, PartialTransaction, Transaction, TxOutpoint
-from electrum_grs.util import NotEnoughFunds, profiler, quantize_feerate, UserFacingException
+from electrum_grs.util import NotEnoughFunds, profiler, quantize_feerate, UserFacingException, NoDynamicFeeEstimates
 from electrum_grs.wallet import CannotBumpFee, CannotDoubleSpendTx, CannotCPFP, BumpFeeStrategy, sweep_preparations
 from electrum_grs import keystore
 from electrum_grs.plugin import run_hook
@@ -1010,7 +1010,8 @@ class QETxSweepFinalizer(QETxFinalizer):
         coins, keypairs = copy.deepcopy(self._txins)
         outputs = [PartialTxOutput.from_address_and_value(address, value='!')]
 
-        tx = self._wallet.wallet.make_unsigned_transaction(coins=coins, outputs=outputs, fee=None, rbf=self._rbf, is_sweep=True)
+        tx = self._wallet.wallet.make_unsigned_transaction(
+            coins=coins, outputs=outputs, fee_policy=self._fee_policy, rbf=self._rbf, is_sweep=True)
         self._logger.debug('fee: %d, inputs: %d, outputs: %d' % (tx.get_fee(), len(tx.inputs()), len(tx.outputs())))
 
         tx.sign(keypairs)
@@ -1047,9 +1048,13 @@ class QETxSweepFinalizer(QETxFinalizer):
         try:
             # make unsigned transaction
             tx = self.make_sweep_tx()
-        except Exception as e:
-            self._logger.error(str(e))
-            self.warning = repr(e)
+        except NoDynamicFeeEstimates:
+            self.warning = _('No dynamic fee estimates available')
+            self._valid = False
+            self.validChanged.emit()
+            return
+        except NotEnoughFunds:
+            self.warning = _('Not enough funds')
             self._valid = False
             self.validChanged.emit()
             return
