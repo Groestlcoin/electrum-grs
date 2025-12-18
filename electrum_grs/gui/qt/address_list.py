@@ -44,7 +44,7 @@ from ..messages import MSG_FREEZE_ADDRESS
 
 if TYPE_CHECKING:
     from .main_window import ElectrumWindow
-    from electrum.wallet import AddressIndexGeneric
+    from electrum_grs.wallet import AddressIndexGeneric
 
 
 class AddressUsageStateFilter(IntEnum):
