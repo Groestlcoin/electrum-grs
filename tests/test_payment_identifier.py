@@ -164,7 +164,7 @@ class TestPaymentIdentifier(ElectrumTestCase):
         self.assertEqual(PaymentIdentifierType.LNURL, pi.type)
         self.assertTrue(pi.need_resolve())
 
-    @patch('electrum.payment_identifier.request_lnurl')
+    @patch('electrum_grs.payment_identifier.request_lnurl')
     def test_lnurl_pay_resolve(self, mock_request_lnurl):
         """Test LNURL-pay (LNURL6) with mocked resolve"""
         valid_lnurl = 'LNURL1DP68GURN8GHJ7MRWVF5HGUEWD3HXZERYWFJHXUEWVDHK6TMVDE6HYMRS9ANRV46DXETQPJQCS4'
@@ -198,7 +198,7 @@ class TestPaymentIdentifier(ElectrumTestCase):
         self.assertEqual('Test payment', pi.lnurl_data.metadata_plaintext)
         self.assertEqual(100, pi.lnurl_data.comment_allowed)
 
-    @patch('electrum.payment_identifier.request_lnurl')
+    @patch('electrum_grs.payment_identifier.request_lnurl')
     def test_lnurl_withdraw_resolve(self, mock_request_lnurl):
         """Test LNURL-withdraw (LNURL3) with mocked resolve"""
         valid_lnurl = 'LNURL1DP68GURN8GHJ7MRWVF5HGUEWD3HXZERYWFJHXUEWVDHK6TM4WPNHYCTYV4EJ7DFCVGENSDPH8QCRZETXVGCXGCMPVFJR' \
@@ -232,7 +232,7 @@ class TestPaymentIdentifier(ElectrumTestCase):
         self.assertEqual(1000, pi.lnurl_data.min_withdrawable_sat)
         self.assertEqual(500000, pi.lnurl_data.max_withdrawable_sat)
 
-    @patch('electrum.payment_identifier.request_lnurl')
+    @patch('electrum_grs.payment_identifier.request_lnurl')
     def test_lnurl_resolve_error(self, mock_request_lnurl):
         """Test LNURL resolve error handling"""
         lnurl = 'LNURL1DP68GURN8GHJ7MRWVF5HGUEWD3HXZERYWFJHXUEWVDHK6TM4WPNHYCTYV4EJ7DFCVGENSDPH8QCRZETXVGCXGCMPVFJR' \

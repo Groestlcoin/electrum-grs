@@ -544,7 +544,7 @@ class SwapServerDialog(WindowModalDialog, QtEventListener):
 
     def update_servers_list(self, servers: Sequence['SwapOffer']):
         self.servers_list.clear()
-        from electrum.util import age
+        from electrum_grs.util import age
         items = []
         for x in servers:
             labels = [""] * len(self.Columns)

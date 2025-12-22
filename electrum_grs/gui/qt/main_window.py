@@ -2782,7 +2782,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.closing_warning_callbacks.append(warning_callback)
 
     def _check_ongoing_force_closures(self) -> Optional[str]:
-        from electrum.lnutil import MIN_FINAL_CLTV_DELTA_ACCEPTED
+        from electrum_grs.lnutil import MIN_FINAL_CLTV_DELTA_ACCEPTED
         if not self.wallet.has_lightning():
             return None
         if not self.network:
@@ -2800,7 +2800,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
     def _check_ongoing_submarine_swaps_callback(self) -> Optional[str]:
         """Callback that will return a warning string if there are unconfirmed swap funding txs."""
-        from electrum.submarine_swaps import MIN_FINAL_CLTV_DELTA_FOR_CLIENT, LOCKTIME_DELTA_REFUND
+        from electrum_grs.submarine_swaps import MIN_FINAL_CLTV_DELTA_FOR_CLIENT, LOCKTIME_DELTA_REFUND
         if not (self.wallet.has_lightning() and self.wallet.lnworker.swap_manager):
             return None
         if not self.network:

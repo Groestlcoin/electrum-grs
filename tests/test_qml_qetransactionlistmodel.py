@@ -1,7 +1,7 @@
 from datetime import datetime
 from unittest.mock import patch
 
-from electrum.gui.qml.qetransactionlistmodel import QETransactionListModel
+from electrum_grs.gui.qml.qetransactionlistmodel import QETransactionListModel
 
 from . import ElectrumTestCase
 
@@ -12,7 +12,7 @@ class TestQETransactionListModel(ElectrumTestCase):
         f = QETransactionListModel.get_section_by_timestamp
 
         mock_today = datetime(2023, 6, 15, 0, 0, 0, 0)
-        with patch('electrum.gui.qml.qetransactionlistmodel.datetime') as mock_dt:
+        with patch('electrum_grs.gui.qml.qetransactionlistmodel.datetime') as mock_dt:
             mock_dt.today.return_value = mock_today
             mock_dt.fromtimestamp = datetime.fromtimestamp
 
@@ -68,4 +68,3 @@ class TestQETransactionListModel(ElectrumTestCase):
 
         result = f('unknown_section', test_date)
         self.assertEqual(result, '2023-06-15 14:30')
-

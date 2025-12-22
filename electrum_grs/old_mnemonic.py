@@ -1671,7 +1671,7 @@ assert n == 1626
 
 def mn_encode(message: str) -> Sequence[str]:
     # note: to generate an 'old'-type mnemonic for testing:
-    #       " ".join(electrum.old_mnemonic.mn_encode(secrets.token_hex(16)))
+    #       " ".join(electrum_grs.old_mnemonic.mn_encode(secrets.token_hex(16)))
     assert is_hex_str(message), f"expected hex, got {type(message)}"
     assert len(message) % 8 == 0
     out = []

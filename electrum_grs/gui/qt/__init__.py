@@ -542,7 +542,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
         """
         if self.has_accepted_terms_of_use():
             return
-        from electrum.gui.qt.wizard.terms_of_use import QETermsOfUseWizard
+        from electrum_grs.gui.qt.wizard.terms_of_use import QETermsOfUseWizard
         dialog = QETermsOfUseWizard(self.config, self.app)
         result = dialog.exec()
         if result == QDialog.DialogCode.Rejected:

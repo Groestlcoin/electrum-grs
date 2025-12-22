@@ -1038,7 +1038,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(w1)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_grs.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -1081,7 +1081,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(w1)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_grs.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -1111,7 +1111,7 @@ class TestPeerDirect(TestPeer):
                 await self._activate_trampoline(w1)
                 await self._activate_trampoline(w2)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_grs.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -1162,7 +1162,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(w1)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_grs.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -1527,7 +1527,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(alice_wallet)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_grs.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=bob_wallet.node_keypair.pubkey),
                 }
 
@@ -1958,7 +1958,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(alice_w)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_grs.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=bob_w.node_keypair.pubkey),
                 }
 
@@ -1989,7 +1989,7 @@ class TestPeerDirect(TestPeer):
         alice_p, bob_p, alice_w, bob_w, _q1, _q2 = self.prepare_peers(alice_channel, bob_channel)
 
         await self._activate_trampoline(alice_w)
-        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+        electrum_grs.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
             'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=bob_w.node_keypair.pubkey),
         }
 
@@ -2055,7 +2055,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(w1)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_grs.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -2128,7 +2128,7 @@ class TestPeerDirect(TestPeer):
             if test_trampoline:
                 await self._activate_trampoline(w1)
                 # declare bob as trampoline node
-                electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+                electrum_grs.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
                     'bob': LNPeerAddr(host="127.0.0.1", port=9735, pubkey=w2.node_keypair.pubkey),
                 }
 
@@ -2285,7 +2285,7 @@ class TestPeerForwarding(TestPeer):
 
         async def pay(lnaddr, pay_req):
             self.assertEqual(PR_UNPAID, graph.workers['alice'].get_payment_status(lnaddr.paymenthash, direction=RECEIVED))
-            with mock.patch('electrum.mpp_split.split_amount_normal',
+            with mock.patch('electrum_grs.mpp_split.split_amount_normal',
                                 side_effect=mocked_split_amount_normal):
                 result, log = await graph.workers['bob'].pay_invoice(pay_req)
             self.assertTrue(result)
@@ -2890,14 +2890,14 @@ class TestPeerForwarding(TestPeer):
             new_payload['amt_to_forward'] = amt_to_forward
             modified_hops_data[0] = dataclasses.replace(modified_hops_data[0], payload=new_payload)
             self.logger.debug(f"{modified_hops_data=}\nsent_{hops_data=}")
-            modified_trampoline_onion = electrum.lnonion.new_onion_packet(
+            modified_trampoline_onion = electrum_grs.lnonion.new_onion_packet(
                 payment_path_pubkeys,
                 session_key,
                 modified_hops_data,
                 **kwargs
             )
             # return the unmodified onion
-            return electrum.lnonion.new_onion_packet(
+            return electrum_grs.lnonion.new_onion_packet(
                 payment_path_pubkeys,
                 session_key,
                 hops_data,
@@ -2921,7 +2921,7 @@ class TestPeerForwarding(TestPeer):
                 }
                 hops_data[0] = dataclasses.replace(hops_data[0], payload=MappingProxyType(new_payload))
                 modified_trampoline_onion = None
-            return electrum.lnonion.new_onion_packet(
+            return electrum_grs.lnonion.new_onion_packet(
                 payment_path_pubkeys,
                 session_key,
                 hops_data,
@@ -2932,8 +2932,8 @@ class TestPeerForwarding(TestPeer):
         alice = graph.workers['alice']
         alice.config.INITIAL_TRAMPOLINE_FEE_LEVEL = 6  # set high so the first attempt would succeed
         with self.assertRaises(PaymentFailure):
-            with mock.patch('electrum.trampoline.new_onion_packet', side_effect=modified_new_onion_packet_trampoline), \
-                    mock.patch('electrum.lnworker.new_onion_packet', side_effect=modified_new_onion_packet_lnworker):
+            with mock.patch('electrum_grs.trampoline.new_onion_packet', side_effect=modified_new_onion_packet_trampoline), \
+                    mock.patch('electrum_grs.lnworker.new_onion_packet', side_effect=modified_new_onion_packet_lnworker):
                         await self._run_trampoline_payment(graph, attempts=1)
         bob_alice_channel = graph.channels[('bob', 'alice')]
         bob_hm = bob_alice_channel.hm
