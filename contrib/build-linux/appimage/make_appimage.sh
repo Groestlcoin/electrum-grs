@@ -24,7 +24,7 @@ PYTHON_VERSION=3.12.11
 PY_VER_MAJOR="3.12"  # as it appears in fs paths
 PKG2APPIMAGE_COMMIT="a9c85b7e61a3a883f4a35c41c5decb5af88b6b5d"
 
-VERSION=4.5.8
+VERSION=4.6.2
 APPIMAGE="$DISTDIR/electrum-grs-$VERSION-x86_64.AppImage"
 
 rm -rf "$BUILDDIR"

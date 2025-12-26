@@ -13,7 +13,7 @@ set -e
 
 pushd "$PROJECT_ROOT"
 
-VERSION=4.5.8
+VERSION=4.6.2
 info "Last commit: $VERSION"
 
 info "preparing electrum-locale."
