@@ -18,7 +18,7 @@ from electrum_grs.plugin import run_hook
 from electrum_grs.fee_policy import FeePolicy, FeeMethod
 from electrum_grs.network import NetworkException
 
-from electrum.gui import messages
+from electrum_grs.gui import messages
 
 from .qewallet import QEWallet
 from .qetypes import QEAmount

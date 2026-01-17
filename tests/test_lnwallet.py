@@ -3,9 +3,9 @@ import os
 
 from . import ElectrumTestCase
 
-from electrum.lnutil import RECEIVED, MIN_FINAL_CLTV_DELTA_ACCEPTED
-from electrum.logging import console_stderr_handler
-from electrum.invoices import LN_EXPIRY_NEVER, PR_UNPAID
+from electrum_grs.lnutil import RECEIVED, MIN_FINAL_CLTV_DELTA_ACCEPTED
+from electrum_grs.logging import console_stderr_handler
+from electrum_grs.invoices import LN_EXPIRY_NEVER, PR_UNPAID
 
 
 class TestLNWallet(ElectrumTestCase):

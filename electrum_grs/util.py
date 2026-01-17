@@ -891,7 +891,7 @@ UI_UNIT_NAME_FEERATE_SAT_PER_VBYTE = "gro/vbyte"
 UI_UNIT_NAME_FEERATE_SAT_PER_VB = "gro/vB"
 UI_UNIT_NAME_TXSIZE_VBYTES = "vbytes"
 UI_UNIT_NAME_MEMPOOL_MB = "vMB"
-UI_UNIT_NAME_FIXED_SAT = "sat"
+UI_UNIT_NAME_FIXED_SAT = "gro"
 
 
 def format_fee_satoshis(fee, *, num_zeros=0, precision=None):
