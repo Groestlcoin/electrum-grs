@@ -473,8 +473,18 @@ Pane {
                 title: qsTr('Enter new password'),
                 infotext: qsTr('If you forget your password, you\'ll need to restore from seed. Please make sure you have your seed stored safely')
             })
-            dialog.accepted.connect(function() {
-                var success = Daemon.setPassword(dialog.password)
+            dialog.passwordEntered.connect(function(password) {
+                dialog.close()
+                var success = Daemon.setPassword(password)
+                if (success && Biometrics.isEnabled) {
+                    if (Biometrics.isAvailable) {
+                        // also update the biometric authentication
+                        Biometrics.enable(password)
+                    } else {
+                        // disable biometric authentication as it is not available
+                        Biometrics.disable()
+                    }
+                }
                 var done_dialog = app.messageDialog.createObject(app, {
                     title: success ? qsTr('Success') : qsTr('Error'),
                     iconSource: success
@@ -529,22 +539,29 @@ Pane {
                         ? "\n\n" + qsTr('The new password needs to match the password of any other existing wallet.')
                         : "")
             })
-            dialog.accepted.connect(function() {
+            dialog.passwordEntered.connect(function(password) {
                 if (Config.walletShouldUseSinglePassword  // android
                         && Daemon.availableWallets.rowCount() > 1  // has more than one wallet
-                        && Daemon.numWalletsWithPassword(dialog.password) < 1  // no other wallet uses this new password
+                        && Daemon.numWalletsWithPassword(password) < 1  // no other wallet uses this new password
                 ) {
-                    var success = false
-                    var error_msg = [
+                    dialog.errorMessage = [
                         qsTr('You need to use the password of any other existing wallet.'),
                         qsTr('Using different wallet passwords is not supported.'),
                     ].join("\n")
+                    dialog.clearPassword()
+                    return
                 } else {
-                    var success = Daemon.currentWallet.setPassword(dialog.password)
+                    var success = Daemon.currentWallet.setPassword(password)
                     if (success && Config.walletShouldUseSinglePassword) {
-                        Daemon.singlePassword = dialog.password
+                        Daemon.singlePassword = password
                     }
                     var error_msg = qsTr('Password change failed')
+                }
+                dialog.close()
+                if (success && Biometrics.isEnabled) {
+                    // unlikely to happen as this means the user somehow moved from
+                    // a unified password to differing passwords
+                    Biometrics.disable()
                 }
                 var done_dialog = app.messageDialog.createObject(app, {
                     title: success ? qsTr('Success') : qsTr('Error'),
@@ -560,6 +577,25 @@ Pane {
         function onSeedRetrieved() {
             seedText.visible = true
             showSeedText.visible = false
+        }
+    }
+
+    Connections {
+        target: Biometrics
+        function onEnablingFailed(error) {
+            if (error === 'CANCELLED') {
+                var biometrics_disabled_dialog = app.messageDialog.createObject(app, {
+                    title: qsTr('Biometric Authentication'),
+                    iconSource: Qt.resolvedUrl('../../icons/warning.png'),
+                    text: qsTr('Biometric authentication disabled. You can enable it again in the settings.')
+                })
+                biometrics_disabled_dialog.open()
+                return
+            }
+            var err = app.messageDialog.createObject(app, {
+                text: qsTr('Failed to update biometric authentication to new password: ') + error
+            })
+            err.open()
         }
     }
 

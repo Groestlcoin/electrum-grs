@@ -192,12 +192,15 @@ class QEDaemon(AuthMixin, QObject):
 
         self._logger.debug('load wallet ' + str(self._path))
 
-        # map empty string password to None
+        # password unification helper:
+        # - if pw not given (None), try pw of current wallet.
+        # - but "" empty str passwords are kept as-is, to open passwordless wallets
+        if password is None:
+            password = self._password
+
+        # map explicit empty str password to None. the backend disallows empty str passwords.
         if password == '':
             password = None
-
-        if not password:
-            password = self._password
 
         wallet_already_open = self.daemon.get_wallet(self._path)
         if wallet_already_open is not None:
@@ -231,7 +234,14 @@ class QEDaemon(AuthMixin, QObject):
                     return
 
                 if self.daemon.config.WALLET_SHOULD_USE_SINGLE_PASSWORD:
-                    self._use_single_password = self.daemon.update_password_for_directory(old_password=local_password, new_password=local_password)
+                    self._use_single_password = self._update_password_for_directory_and_unlock_wallets(old_password=local_password, new_password=local_password)
+                    if not self._use_single_password and self.daemon.config.WALLET_ANDROID_USE_BIOMETRIC_AUTHENTICATION:
+                        # we need to disable biometric auth if the user creates wallets with different passwords as
+                        # we only store one encrypted password which is not associated to a specific wallet
+                        self._logger.warning(f"disabling biometric authentication, not in single password mode")
+                        self.daemon.config.WALLET_ANDROID_USE_BIOMETRIC_AUTHENTICATION = False
+                        self.daemon.config.WALLET_ANDROID_BIOMETRIC_AUTH_WRAPPED_WALLET_PASSWORD = ''
+                        self.daemon.config.WALLET_ANDROID_BIOMETRIC_AUTH_ENCRYPTED_WRAP_KEY = ''
                     self._password = local_password
                     self.singlePasswordChanged.emit()
                     self._logger.info(f'use single password: {self._use_single_password}')
@@ -381,7 +391,7 @@ class QEDaemon(AuthMixin, QObject):
         return f'wallet_{i}'
 
     @pyqtSlot()
-    @auth_protect(method='wallet')
+    @auth_protect(method='wallet_password_only')
     def startChangePassword(self):
         if self._use_single_password:
             self.requestNewPassword.emit()
@@ -392,10 +402,23 @@ class QEDaemon(AuthMixin, QObject):
     def setPassword(self, password):
         assert self._use_single_password
         assert password
-        if not self.daemon.update_password_for_directory(old_password=self._password, new_password=password):
+        if not self._update_password_for_directory_and_unlock_wallets(old_password=self._password, new_password=password):
             return False
         self._password = password
         return True
+
+    def _update_password_for_directory_and_unlock_wallets(self, *, old_password, new_password):
+        # note: this assumes all wallet files are in a single directory.
+        # change wallet passwords:
+        ret = self.daemon.update_password_for_directory(old_password=old_password, new_password=new_password)
+        # If some wallets just had their password changed, they got "locked" by wallet.update_password().
+        # If the password is not unified yet, other loaded wallets might still be unlocked.
+        # restore the invariant that all loaded wallets in qml must be unlocked:
+        for w in self.daemon.get_wallets().values():
+            if not w.is_unlocked():
+                w.unlock(new_password)
+            assert w.is_unlocked()
+        return ret
 
     @pyqtProperty(QENewWalletWizard, notify=newWalletWizardChanged)
     def newWalletWizard(self):
