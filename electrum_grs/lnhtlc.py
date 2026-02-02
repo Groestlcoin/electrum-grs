@@ -7,34 +7,34 @@ from .util import bfh, with_lock
 if TYPE_CHECKING:
     from .json_db import StoredDict
 
+LOG_TEMPLATE = {
+    'adds': {},              # "side who offered htlc" -> htlc_id -> htlc
+    'locked_in': {},         # "side who offered htlc" -> action -> htlc_id -> whose ctx -> ctn
+    'settles': {},           # "side who offered htlc" -> action -> htlc_id -> whose ctx -> ctn
+    'fails': {},             # "side who offered htlc" -> action -> htlc_id -> whose ctx -> ctn
+    'fee_updates': {},       # "side who initiated fee update" -> index -> list of FeeUpdates
+    'revack_pending': False,
+    'next_htlc_id': 0,
+    'ctn': -1,               # oldest unrevoked ctx of sub
+}
+
 
 class HTLCManager:
 
-    def __init__(self, log: 'StoredDict', *, initial_feerate=None):
+    def __init__(self, log: 'StoredDict', *, initiator=None, initial_feerate=None):
 
         if len(log) == 0:
-            initial = {
-                'adds': {},              # "side who offered htlc" -> htlc_id -> htlc
-                'locked_in': {},         # "side who offered htlc" -> action -> htlc_id -> whose ctx -> ctn
-                'settles': {},           # "side who offered htlc" -> action -> htlc_id -> whose ctx -> ctn
-                'fails': {},             # "side who offered htlc" -> action -> htlc_id -> whose ctx -> ctn
-                'fee_updates': {},       # "side who initiated fee update" -> index -> list of FeeUpdates
-                'revack_pending': False,
-                'next_htlc_id': 0,
-                'ctn': -1,               # oldest unrevoked ctx of sub
-            }
             # note: "htlc_id" keys in dict are str! but due to json_db magic they can *almost* be treated as int...
-            log[LOCAL] = deepcopy(initial)
-            log[REMOTE] = deepcopy(initial)
+            log[LOCAL] = deepcopy(LOG_TEMPLATE)
+            log[REMOTE] = deepcopy(LOG_TEMPLATE)
             log[LOCAL]['unacked_updates'] = {}
             log[LOCAL]['was_revoke_last'] = False
 
         # maybe bootstrap fee_updates if initial_feerate was provided
         if initial_feerate is not None:
             assert type(initial_feerate) is int
-            for sub in (LOCAL, REMOTE):
-                if not log[sub]['fee_updates']:
-                    log[sub]['fee_updates'][0] = FeeUpdate(rate=initial_feerate, ctn_local=0, ctn_remote=0)
+            assert initiator in [LOCAL, REMOTE]
+            log[initiator]['fee_updates'][0] = FeeUpdate(rate=initial_feerate, ctn_local=0, ctn_remote=0)
         self.log = log
 
         # We need a lock as many methods of HTLCManager are accessed by both the asyncio thread and the GUI.
@@ -595,9 +595,9 @@ class HTLCManager:
         """Return feerate (sat/kw) used in subject's commitment txn at ctn."""
         ctn = max(0, ctn)  # FIXME rm this
         # only one party can update fees; use length of logs to figure out which:
-        assert not (len(self.log[LOCAL]['fee_updates']) > 1 and len(self.log[REMOTE]['fee_updates']) > 1)
+        assert not (len(self.log[LOCAL]['fee_updates']) > 0 and len(self.log[REMOTE]['fee_updates']) > 0)
         fee_log = self.log[LOCAL]['fee_updates']  # type: Sequence[FeeUpdate]
-        if len(self.log[REMOTE]['fee_updates']) > 1:
+        if len(self.log[REMOTE]['fee_updates']) > 0:
             fee_log = self.log[REMOTE]['fee_updates']
         # binary search
         left = 0
