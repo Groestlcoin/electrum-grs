@@ -160,7 +160,6 @@ RUN curl --location --progress-bar \
 # https://github.com/kivy/buildozer/blob/master/docs/source/installation.rst#android-on-ubuntu-2004-64bit
 RUN apt -y update -q \
     && apt -y install -q --no-install-recommends --allow-downgrades \
-        python3-distutils \
         python3-setuptools \
         wget \
         lbzip2 \
