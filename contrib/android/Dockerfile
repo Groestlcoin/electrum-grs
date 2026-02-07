@@ -226,11 +226,12 @@ RUN mkdir --parents "/opt/cpython/download" && cd "/opt/cpython/download" \
     && mkdir "/opt/cpython/install" \
     && ./configure \
         --prefix="/opt/cpython/install" \
+        --with-ensurepip=install \
         -q \
     && make "-j$(nproc)" -s \
     && make -s altinstall \
     && ln -s "/opt/cpython/install/bin/python${VENV_PY_VER_MAJOR}" "/opt/cpython/install/bin/python3"
-RUN "/opt/cpython/install/bin/python3" -m ensurepip
+RUN "/opt/cpython/install/bin/python3" -m pip install --upgrade "setuptools>=58.0.4" "wheel"
 
 # venv, VIRTUAL_ENV is used by buildozer to indicate a venv environment
 ENV VIRTUAL_ENV=/opt/venv
@@ -251,8 +252,8 @@ RUN cd /opt \
     && git clone https://github.com/spesmilo/buildozer \
     && cd buildozer \
     && git checkout "${BUILDOZER_CHECKOUT_COMMIT}^{commit}" \
-    # SETUPTOOLS_USE_DISTUTILS=stdlib needed to build buildozer for GRS
-    && SETUPTOOLS_USE_DISTUTILS=stdlib /opt/venv/bin/python3  -m pip install --no-build-isolation --no-dependencies -e . \
+    && /opt/venv/bin/python3 -m pip install --upgrade "setuptools>=58.0.4" \
+    && /opt/venv/bin/python3 -m pip install --no-build-isolation --no-dependencies -e . \
     && /opt/venv/bin/python3 -m pip install --no-build-isolation --no-dependencies -e .
 
 # install python-for-android
