@@ -783,6 +783,8 @@ class LNGossip(Logger):
             progress_percent = 0
         return current_est, total_est, progress_percent
 
+    @ignore_exceptions
+    @log_exceptions
     async def process_gossip(self, chan_anns, node_anns, chan_upds):
         # note: we run in the originating peer's TaskGroup, so we can safely raise here
         #       and disconnect only from that peer
@@ -1926,6 +1928,7 @@ class LNWallet(Logger):
             f"pay_to_node starting session for RHASH={payment_hash.hex()}. "
             f"using_trampoline={self.uses_trampoline()}. "
             f"invoice_features={paysession.invoice_features.get_names()}. "
+            f"r_tags={LnAddr.format_bolt11_routing_info_as_human_readable(r_tags)}. "
             f"{amount_to_pay=} msat. {budget=}")
         if not self.uses_trampoline():
             self.logger.info(
@@ -2568,7 +2571,8 @@ class LNWallet(Logger):
         assert amount_msat is None or amount_msat > 0
         timestamp = int(time.time())
         routing_hints = self.calc_routing_hints_for_invoice(amount_msat, channels=channels)
-        self.logger.info(f"creating bolt11 invoice with routing_hints: {routing_hints}, sat: {(amount_msat or 0) // 1000}")
+        formatted_r_hints = LnAddr.format_bolt11_routing_info_as_human_readable(routing_hints, has_explicit_r_tagtype=True)
+        self.logger.info(f"creating bolt11 invoice with routing_hints: {formatted_r_hints}, sat: {(amount_msat or 0) // 1000}")
         payment_secret = self.get_payment_secret(payment_info.payment_hash)
         amount_btc = amount_msat/Decimal(COIN*1000) if amount_msat else None
         min_final_cltv_delta = payment_info.min_final_cltv_delta + MIN_FINAL_CLTV_DELTA_BUFFER_INVOICE
@@ -3914,7 +3918,7 @@ class LNWallet(Logger):
                 invoice_features = payload["invoice_features"]["invoice_features"]
                 invoice_routing_info = payload["invoice_routing_info"]["invoice_routing_info"]
                 r_tags = decode_routing_info(invoice_routing_info)
-                self.logger.info(f'r_tags {r_tags}')
+                self.logger.info(f'r_tags {LnAddr.format_bolt11_routing_info_as_human_readable(r_tags)}')
                 # TODO legacy mpp payment, use total_msat from trampoline onion
             else:
                 self.logger.info('forward_trampoline: end-to-end')

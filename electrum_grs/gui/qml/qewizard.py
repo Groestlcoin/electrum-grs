@@ -3,11 +3,12 @@ from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import pyqtProperty, pyqtSignal, pyqtSlot, QObject
 
+from electrum_grs.base_crash_reporter import send_exception_to_crash_reporter
 from electrum_grs.logging import get_logger
 from electrum_grs import mnemonic
 from electrum_grs.wizard import NewWalletWizard, ServerConnectWizard, TermsOfUseWizard
 from electrum_grs.storage import WalletStorage, StorageReadWriteError
-from electrum_grs.util import WalletFileException
+from electrum_grs.util import WalletFileException, UserFacingException
 from electrum_grs.gui import messages
 
 if TYPE_CHECKING:
@@ -172,9 +173,12 @@ class QENewWalletWizard(NewWalletWizard, QEAbstractWizard):
             self.path = path
 
             self.createSuccess.emit()
+        except UserFacingException as e:
+            self._logger.debug(f"createStorage errored: {e!r}", exc_info=True)
+            self.createError.emit(str(e))
         except Exception as e:
             self._logger.exception(f"createStorage errored: {e!r}")
-            self.createError.emit(str(e))
+            send_exception_to_crash_reporter(e)
 
 
 class QEServerConnectWizard(ServerConnectWizard, QEAbstractWizard):

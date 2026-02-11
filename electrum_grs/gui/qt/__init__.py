@@ -70,7 +70,7 @@ from electrum_grs.i18n import _, set_language
 from electrum_grs.plugin import run_hook
 from electrum_grs.util import (UserCancelled, profiler, send_exception_to_crash_reporter,
                            WalletFileException, get_new_wallet_name, InvalidPassword,
-                           standardize_path)
+                           standardize_path, UserFacingException)
 from electrum_grs.wallet import Wallet, Abstract_Wallet
 from electrum_grs.wallet_db import WalletRequiresSplit, WalletRequiresUpgrade, WalletUnfinished
 from electrum_grs.gui import BaseElectrumGui
@@ -411,12 +411,14 @@ class ElectrumGui(BaseElectrumGui, Logger):
             return
         except Exception as e:
             self.logger.exception('')
-            err_text = str(e) if isinstance(e, WalletFileException) else repr(e)
-            custom_message_box(icon=QMessageBox.Icon.Warning,
-                               parent=None,
-                               title=_('Error'),
-                               text=_('Cannot load wallet') + '(2) :\n' + err_text)
-            if isinstance(e, WalletFileException) and e.should_report_crash:
+            if isinstance(e, UserFacingException) \
+                    or isinstance(e, WalletFileException) and not e.should_report_crash:
+                err_text = str(e) if isinstance(e, WalletFileException) else repr(e)
+                custom_message_box(icon=QMessageBox.Icon.Warning,
+                                   parent=None,
+                                   title=_('Error'),
+                                   text=_('Cannot load wallet') + '(2) :\n' + err_text)
+            else:
                 send_exception_to_crash_reporter(e)
             if app_is_starting:
                 # If we raise in this context, there are no more fallbacks, we will shut down.
@@ -502,11 +504,9 @@ class ElectrumGui(BaseElectrumGui, Logger):
                 self.logger.info('wizard dialog cancelled by user')
                 return
             db.put('x3', wizard.get_wizard_data()['x3'])
-            db.write()
+            db.write_and_force_consolidation()  # TODO API for db is a bit weird: there should be a close method
 
-        wallet = Wallet(db, config=self.config)
-        wallet.start_network(self.daemon.network)
-        self.daemon.add_wallet(wallet)
+        wallet = self.daemon.load_wallet(wallet_file, password, upgrade=True)
         return wallet
 
     def close_window(self, window: ElectrumWindow):
