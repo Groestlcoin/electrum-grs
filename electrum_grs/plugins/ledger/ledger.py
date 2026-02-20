@@ -261,10 +261,10 @@ class Ledger_KeyStore(Hardware_KeyStore):
             client = self.get_client()
         return client.dongleObject
 
-    def give_error(self, message):
+    def give_error(self, message: str | BaseException):
         _logger.info(message)
         if not self.signing:
-            self.handler.show_error(message)
+            self.handler.show_error(str(message))
         else:
             self.signing = False
         raise UserFacingException(message)
@@ -583,10 +583,10 @@ class Ledger_KeyStore(Hardware_KeyStore):
                     _('Your device might not have support for this functionality.')))
             else:
                 self.logger.exception('')
-                self.handler.show_error(e)
+                self.handler.show_error(str(e))
         except BaseException as e:
             self.logger.exception('')
-            self.handler.show_error(e)
+            self.handler.show_error(str(e))
         finally:
             self.handler.finished()
 
