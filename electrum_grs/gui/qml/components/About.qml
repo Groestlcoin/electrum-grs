@@ -72,7 +72,7 @@ Pane {
                 Layout.alignment: Qt.AlignRight
             }
             Label {
-                text: qsTr('<a href="https://groestlcoin.org">https://groestlcoin.org</a>')
+                text: '<a href="https://groestlcoin.org">https://groestlcoin.org</a>'
                 textFormat: Text.RichText
                 onLinkActivated: Qt.openUrlExternally(link)
             }

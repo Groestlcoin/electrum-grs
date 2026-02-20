@@ -39,7 +39,7 @@ from electrum_grs.plugin import BasePlugin, hook
 from electrum_grs.logging import Logger
 from electrum_grs.util import log_exceptions, ca_path, OldTaskGroup, get_asyncio_loop, InvoiceError, \
     LightningHistoryItem, event_listener, EventListener, make_aiohttp_proxy_connector, \
-    get_running_loop
+    get_running_loop, run_sync_function_on_asyncio_thread
 from electrum_grs.invoices import Invoice, Request, PR_UNKNOWN, PR_PAID, BaseInvoice, PR_INFLIGHT
 from electrum_grs import constants
 from electrum_grs.lnutil import RECEIVED
@@ -278,7 +278,7 @@ class NWCServer(Logger, EventListener):
     def restart_event_handler(self) -> None:
         """To be called when the connections change so we restart with a new filter"""
         if self.event_handler_task:
-            self.event_handler_task.cancel()
+            run_sync_function_on_asyncio_thread(self.event_handler_task.cancel, block=True)
 
     @event_listener
     def on_event_proxy_set(self, *args):
