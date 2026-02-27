@@ -38,7 +38,7 @@ from electrum_grs.crypto import privkey_to_pubkey
 from electrum_grs.lnutil import Keypair, PaymentFailure, LnFeatures, HTLCOwner, PaymentFeeBudget, RECEIVED
 from electrum_grs.lnchannel import ChannelState, PeerState, Channel
 from electrum_grs.lnrouter import LNPathFinder, PathEdge, LNPathInconsistent
-from electrum_grs.channel_db import ChannelDB
+from electrum_grs.channel_db import ChannelDB, InvalidGossipMsg
 from electrum_grs.lnworker import LNWallet, NoPathFound, SentHtlcInfo, PaySession, LNPeerManager
 from electrum_grs.lnmsg import encode_msg, decode_msg
 from electrum_grs import lnmsg
@@ -472,11 +472,12 @@ class TestPeer(ElectrumTestCase):
     def prepare_recipient(self, w2, payment_hash, test_hold_invoice, test_failure):
         if not test_hold_invoice and not test_failure:
             return
-        preimage = bytes.fromhex(w2._preimages.pop(payment_hash.hex()))
+        preimage_hex, is_public = w2._preimages.pop(payment_hash.hex())
+        preimage = bytes.fromhex(preimage_hex)
         if test_hold_invoice:
             async def cb(payment_hash):
                 if not test_failure:
-                    w2.save_preimage(payment_hash, preimage)
+                    w2.save_preimage(payment_hash, preimage, mark_as_public=is_public)
                 else:
                     raise OnionRoutingFailure(code=OnionFailureCode.INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS, data=b'')
             w2.register_hold_invoice(payment_hash, cb)
@@ -606,6 +607,32 @@ class TestPeerUtils(TestPeer):
         with self.assertRaises(Exception) as ctx:
             Peer.decode_short_ids(encoded_unsupported)
         self.assertIn("unexpected first byte", str(ctx.exception))
+
+    async def test_maybe_save_remote_update(self):
+        graph = self.prepare_chans_and_peers_in_graph(self.GRAPH_DEFINITIONS['single_chan'])
+        alice_bob_peer, bob_alice_peer = graph.peers[('alice', 'bob')], graph.peers[('bob', 'alice')]
+        alice_bob_chan, bob_alice_chan = graph.channels[('alice', 'bob')], graph.channels[('bob', 'alice')]
+
+        # prepare channel update from alice
+        alice_to_bob_chan_update = alice_bob_chan.get_outgoing_gossip_channel_update()
+        raw = alice_to_bob_chan_update
+        payload = decode_msg(alice_to_bob_chan_update)[1]
+        payload['raw'] = raw
+
+        # bob should accept the update and save it
+        self.assertIsNone(bob_alice_chan.storage.get('remote_update'))
+        bob_alice_peer.maybe_save_remote_update(payload)
+        self.assertEqual(bob_alice_chan.storage.get('remote_update'), raw.hex())
+
+        # alice shouldn't save her own channel update as remote update
+        self.assertIsNone(alice_bob_chan.storage.get('remote_update'))
+        alice_bob_peer.maybe_save_remote_update(payload)
+        self.assertIsNone(alice_bob_chan.storage.get('remote_update'))
+
+        ChannelDB.verify_channel_update(payload, start_node=bob_alice_peer.pubkey)
+        # trying to verify the sig against the wrong pubkey should fail obviously
+        with self.assertRaises(InvalidGossipMsg):
+            ChannelDB.verify_channel_update(payload, start_node=alice_bob_peer.pubkey)
 
 
 class TestPeerDirect(TestPeer):
