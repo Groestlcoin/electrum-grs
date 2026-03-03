@@ -11,7 +11,9 @@ from electrum_grs.logging import get_logger
 from electrum_grs.i18n import _
 from electrum_grs.bitcoin import DummyAddress
 from electrum_grs.transaction import PartialTxOutput, PartialTransaction, Transaction, TxOutpoint
-from electrum_grs.util import NotEnoughFunds, profiler, quantize_feerate, UserFacingException, NoDynamicFeeEstimates
+from electrum_grs.util import (
+    NotEnoughFunds, profiler, quantize_feerate, UserFacingException, NoDynamicFeeEstimates, event_listener
+)
 from electrum_grs.wallet import CannotBumpFee, CannotDoubleSpendTx, CannotCPFP, BumpFeeStrategy, sweep_preparations
 from electrum_grs import keystore
 from electrum_grs.plugin import run_hook
@@ -19,10 +21,10 @@ from electrum_grs.fee_policy import FeePolicy, FeeMethod
 from electrum_grs.network import NetworkException
 
 from electrum_grs.gui import messages
+from electrum_grs.gui.common_qt.util import QtEventListener
 
 from .qewallet import QEWallet
 from .qetypes import QEAmount
-from .util import QtEventListener, event_listener
 
 if TYPE_CHECKING:
     from electrum_grs.simple_config import SimpleConfig

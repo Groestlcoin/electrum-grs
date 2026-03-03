@@ -7,8 +7,9 @@ from electrum_grs.logging import get_logger
 from electrum_grs.util import Satoshis
 from electrum_grs.gui import messages
 
+from electrum.gui.common_qt.util import qt_event_listener, QtEventListener
+
 from .qetypes import QEAmount
-from .util import QtEventListener, qt_event_listener
 from .qemodelfilter import QEFilterProxyModel
 
 

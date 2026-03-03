@@ -35,10 +35,10 @@ from electrum_grs.i18n import _, get_gui_lang_names
 from electrum_grs import util
 from electrum_grs.util import base_units_list, event_listener
 
+from electrum_grs.gui.common_qt.util import QtEventListener
 from electrum_grs.gui import messages
 
-from .util import ColorScheme, HelpLabel, Buttons, CloseButton, QtEventListener
-
+from .util import ColorScheme, HelpLabel, Buttons, CloseButton
 
 if TYPE_CHECKING:
     from electrum_grs.simple_config import SimpleConfig, ConfigVarWithConfig

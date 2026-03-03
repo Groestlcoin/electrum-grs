@@ -9,12 +9,13 @@ from electrum_grs.gui import messages
 from electrum_grs.logging import get_logger
 from electrum_grs.lnutil import LOCAL, REMOTE
 from electrum_grs.lnchannel import ChanCloseOption, ChannelState, AbstractChannel, Channel, ChannelBackup
-from electrum_grs.util import format_short_id
+from electrum_grs.util import format_short_id, event_listener
+
+from electrum_grs.gui.common_qt.util import QtEventListener
 
 from .auth import AuthMixin, auth_protect
 from .qewallet import QEWallet
 from .qetypes import QEAmount
-from .util import QtEventListener, event_listener
 
 if TYPE_CHECKING:
     from electrum_grs.wallet import Abstract_Wallet

@@ -19,10 +19,13 @@ from electrum_grs.bitcoin import COIN, address_to_script
 from electrum_grs.paymentrequest import PaymentRequest
 from electrum_grs.payment_identifier import PaymentIdentifier, PaymentIdentifierState, PaymentIdentifierType
 from electrum_grs.network import Network
+from electrum_grs.util import event_listener
+
+from electrum_grs.gui.common_qt.util import QtEventListener
 
 from .qetypes import QEAmount
 from .qewallet import QEWallet
-from .util import status_update_timer_interval, QtEventListener, event_listener
+from .util import status_update_timer_interval
 from ...util import InvoiceError
 
 

@@ -5,10 +5,12 @@ from PyQt6.QtCore import Qt, QAbstractListModel, QModelIndex
 
 from electrum_grs.logging import get_logger
 from electrum_grs.util import Satoshis
-from .qeconfig import QEConfig
 
+from electrum_grs.gui.common_qt.util import QtEventListener, qt_event_listener
+
+from .qeconfig import QEConfig
 from .qetypes import QEAmount
-from .util import qt_event_listener, QtEventListener
+
 
 if TYPE_CHECKING:
     from electrum_grs.wallet import Abstract_Wallet
