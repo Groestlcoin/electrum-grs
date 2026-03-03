@@ -8,7 +8,7 @@ from electrum_grs.logging import get_logger
 from electrum_grs.util import Satoshis, format_time
 from electrum_grs.invoices import BaseInvoice, PR_EXPIRED, LN_EXPIRY_NEVER, Invoice, Request, PR_PAID
 
-from electrum.gui.common_qt.util import QtEventListener, qt_event_listener
+from electrum_grs.gui.common_qt.util import QtEventListener, qt_event_listener
 
 from .util import status_update_timer_interval
 from .qetypes import QEAmount

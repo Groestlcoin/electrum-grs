@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (QDialog, QLabel, QVBoxLayout, QPushButton)
 
 from electrum_grs.i18n import _
 
-from electrum.gui.common_qt.util import QtEventListener, qt_event_listener
+from electrum_grs.gui.common_qt.util import QtEventListener, qt_event_listener
 
 from .util import Buttons
 

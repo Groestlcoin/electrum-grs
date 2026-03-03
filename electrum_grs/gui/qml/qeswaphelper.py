@@ -18,7 +18,7 @@ from electrum_grs.fee_policy import FeePolicy
 
 from electrum_grs.gui import messages
 
-from electrum.gui.common_qt.util import QtEventListener, qt_event_listener
+from electrum_grs.gui.common_qt.util import QtEventListener, qt_event_listener
 
 from .auth import AuthMixin, auth_protect
 from .qetypes import QEAmount

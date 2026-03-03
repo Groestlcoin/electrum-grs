@@ -47,7 +47,7 @@ from electrum_grs.logging import Logger
 from electrum_grs.submarine_swaps import NostrTransport, HttpTransport, SwapServerTransport, SwapServerError
 from electrum_grs.gui.messages import MSG_SUBMARINE_PAYMENT_HELP_TEXT
 
-from electrum.gui.common_qt.util import QtEventListener, qt_event_listener
+from electrum_grs.gui.common_qt.util import QtEventListener, qt_event_listener
 
 from .util import (WindowModalDialog, ColorScheme, HelpLabel, Buttons, CancelButton, WWLabel,
                    read_QIcon, IconLabel, HelpButton, RunCoroutineDialog)

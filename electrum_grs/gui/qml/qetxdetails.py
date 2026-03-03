@@ -12,7 +12,7 @@ from electrum_grs.address_synchronizer import TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT
 from electrum_grs.wallet import TxSighashDanger
 from electrum_grs.fee_policy import FeePolicy
 
-from electrum.gui.common_qt.util import QtEventListener, qt_event_listener
+from electrum_grs.gui.common_qt.util import QtEventListener, qt_event_listener
 
 from .qewallet import QEWallet
 from .qetypes import QEAmount

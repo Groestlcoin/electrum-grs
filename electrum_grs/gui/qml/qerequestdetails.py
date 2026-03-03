@@ -14,7 +14,7 @@ from electrum_grs.payment_identifier import PaymentIdentifier, PaymentIdentifier
 from electrum_grs.i18n import _
 from electrum_grs.network import Network
 
-from electrum.gui.common_qt.util import QtEventListener, qt_event_listener
+from electrum_grs.gui.common_qt.util import QtEventListener, qt_event_listener
 
 from .qewallet import QEWallet
 from .qetypes import QEAmount

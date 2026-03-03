@@ -8,7 +8,7 @@ from electrum_grs.logging import get_logger
 from electrum_grs.util import Satoshis, TxMinedInfo
 from electrum_grs.address_synchronizer import TX_HEIGHT_FUTURE, TX_HEIGHT_LOCAL
 
-from electrum.gui.common_qt.util import QtEventListener, qt_event_listener
+from electrum_grs.gui.common_qt.util import QtEventListener, qt_event_listener
 
 from .qetypes import QEAmount
 

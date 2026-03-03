@@ -41,7 +41,7 @@ from electrum_grs.logging import get_logger
 from electrum_grs.util import is_valid_websocket_url
 from electrum_grs.gui import messages
 
-from electrum.gui.common_qt.util import QtEventListener, qt_event_listener
+from electrum_grs.gui.common_qt.util import QtEventListener, qt_event_listener
 from .util import (
     Buttons, CloseButton, HelpButton, read_QIcon, char_width_in_lineedit, PasswordLineEdit, Spinner, HelpLabel
 )
