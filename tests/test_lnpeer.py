@@ -734,6 +734,8 @@ class TestPeerDirect(TestPeer):
         # note: we don't start peer.htlc_switch() so that the fake htlcs are left alone.
         async def f():
             p1, p2, w1, w2 = self.prepare_peers(chan_AB, chan_BA)
+            p1.MIN_TIME_BETWEEN_SENDING_COMMITSIGS = 0
+            p2.MIN_TIME_BETWEEN_SENDING_COMMITSIGS = 0
             async with OldTaskGroup() as group:
                 await group.spawn(p1._message_loop())
                 await group.spawn(p2._message_loop())
@@ -753,6 +755,8 @@ class TestPeerDirect(TestPeer):
             # simulating disconnection. recreate transports.
             self.logger.info("simulating disconnection. recreating transports.")
             p1, p2, w1, w2 = self.prepare_peers(chan_AB, chan_BA)
+            p1.MIN_TIME_BETWEEN_SENDING_COMMITSIGS = 0
+            p2.MIN_TIME_BETWEEN_SENDING_COMMITSIGS = 0
             for chan in (chan_AB, chan_BA):
                 chan.peer_state = PeerState.DISCONNECTED
             async with OldTaskGroup() as group:
@@ -1567,16 +1571,19 @@ class TestPeerDirect(TestPeer):
             alice_fee_range={'min_fee_satoshis': 1, 'max_fee_satoshis': 10},
             bob_fee_range={'min_fee_satoshis': 10, 'max_fee_satoshis': 300})
 
-    ## This test works but it is too slow (LN_P2P_NETWORK_TIMEOUT)
-    ## because tests do not use a proper LNWorker object
-    #def test_modern_shutdown_no_overlap(self):
-    #    self.assertRaises(Exception, lambda: asyncio.run(
-    #        self._test_shutdown(
-    #            alice_fee=1,
-    #            bob_fee=200,
-    #            alice_fee_range={'min_fee_satoshis': 1, 'max_fee_satoshis': 10},
-    #            bob_fee_range={'min_fee_satoshis': 50, 'max_fee_satoshis': 300})
-    #    ))
+    @mock.patch('electrum.lnpeer.LN_P2P_NETWORK_TIMEOUT', 0.05)
+    async def test_modern_shutdown_no_overlap(self):
+        with self.assertLogs('electrum', level='ERROR') as logs:
+            with self.assertRaisesRegex(Exception, "closing_signed not received"):
+                await self._test_shutdown(
+                    alice_fee=1,
+                    bob_fee=200,
+                    alice_fee_range={'min_fee_satoshis': 1, 'max_fee_satoshis': 10},
+                    bob_fee_range={'min_fee_satoshis': 50, 'max_fee_satoshis': 300})
+        self.assertTrue(any(("bob->alice" in msg and "There is no overlap between between their and our fee range." in msg) for msg in logs.output))
+        self.assertTrue(any(("alice->bob" in msg and "closing_signed not received, force closing." in msg) for msg in logs.output))
+        # note: "Task exception was never retrieved" for "Exception: There is no overlap [...]"
+        #       is because we don't start peer.main_loop and hence peer.taskgroup is never joined.
 
     async def _test_shutdown(self, alice_fee, bob_fee, alice_fee_range=None, bob_fee_range=None):
         graph = self.prepare_chans_and_peers_in_graph(self.GRAPH_DEFINITIONS['single_chan'])
@@ -1607,6 +1614,7 @@ class TestPeerDirect(TestPeer):
                    payment_hash=lnaddr.paymenthash,
                    min_final_cltv_delta=lnaddr.get_min_final_cltv_delta(),
                    payment_secret=lnaddr.payment_secret)
+            await p2.received_commitsig_event.wait()
             # alice closes
             await p1.close_channel(alice_channel.channel_id)
             gath.cancel()
