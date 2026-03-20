@@ -1,6 +1,6 @@
 from electrum_grs.plugins.revealer.revealer import RevealerPlugin
 
-from . import ElectrumTestCase
+from .. import ElectrumTestCase
 
 
 class TestRevealer(ElectrumTestCase):
