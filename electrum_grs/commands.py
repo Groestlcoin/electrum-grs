@@ -397,10 +397,19 @@ class Commands(Logger):
 
     def _setconfig(self, key, value):
         value = self._setconfig_normalize_value(key, value)
-        if self.daemon and key == SimpleConfig.RPC_USERNAME.key():
-            self.daemon.commands_server.rpc_user = value
-        if self.daemon and key == SimpleConfig.RPC_PASSWORD.key():
-            self.daemon.commands_server.rpc_password = value
+        if self.daemon and key in (
+            SimpleConfig.RPC_USERNAME.key(),
+            SimpleConfig.RPC_PASSWORD.key(),
+            SimpleConfig.RPC_HOST.key(),
+            SimpleConfig.RPC_PORT.key(),
+            SimpleConfig.RPC_SOCKET_TYPE.key(),
+            SimpleConfig.RPC_SOCKET_FILEPATH.key(),
+        ):
+            raise UserFacingException(
+                "error: RPC server settings cannot be changed for already running daemon. "
+                "Stop the daemon first, and run 'setconfig' in --offline mode. "
+                "\nFor example: '$ electrum -o setconfig rpcport 7777'."
+            )
         if Plugins.is_plugin_enabler_config_key(key):
             self.config.set_key(key, value)
         else:
@@ -2452,7 +2461,7 @@ def get_parser():
     subparsers = parser.add_subparsers(dest='cmd', metavar='<command>')
     # gui
     parser_gui = subparsers.add_parser('gui', description="Run Electrum-grs's Graphical User Interface.", help="Run GUI (default)")
-    parser_gui.add_argument("url", nargs='?', default=None, help="groestlcoin URI (or bip70 file)")
+    parser_gui.add_argument("url", nargs='?', default=None, help="groestlcoin URI")
     parser_gui.add_argument("-g", "--gui", dest=SimpleConfig.GUI_NAME.key(), help="select graphical user interface", choices=['qt', 'text', 'stdio', 'qml'])
     parser_gui.add_argument("-m", action="store_true", dest=SimpleConfig.GUI_QT_HIDE_ON_STARTUP.key(), default=False, help="hide GUI on startup")
     parser_gui.add_argument("-L", "--lang", dest=SimpleConfig.LOCALIZATION_LANGUAGE.key(), default=None, help="default language used in GUI")
