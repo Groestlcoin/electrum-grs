@@ -220,8 +220,8 @@ class BTXPro(ExchangeBase):
     async def get_rates(self, ccy):
         json1 = await self.get_json('api.btxpro.com', '/v1.1/public/getticker?market=btc-grs')
         if ccy != "BTC":
-            json2 = await self.get_json('api.coingecko.com', '/api/v3/simple/price?ids=bitcoin&vs_currencies=%s' % ccy)
-            return {ccy: to_decimal(json1['result']['Last'])*to_decimal(json2['bitcoin'][ccy.lower()])}
+            json2 = await self.get_json('api.coingecko.com', '/api/v3/simple/price?ids=groestlcoin&vs_currencies=%s' % ccy)
+            return {ccy: to_decimal(json1['result']['Last'])*to_decimal(json2['groestlcoin'][ccy.lower()])}
         return {ccy: to_decimal(json1['result']['Last'])}
 
 class Coinbase(ExchangeBase):
@@ -247,14 +247,6 @@ class CoinCap(ExchangeBase):
                                       '/v2/assets/groestlcoin/history?interval=d1&limit=2000')
         return dict([(timestamp_to_datetime(h['time']/1000, utc=True).strftime('%Y-%m-%d'), str(h['priceUsd']))
                      for h in history['data']])
-
-class CoinEx(ExchangeBase):
-    async def get_rates(self, ccy):
-        json1 = await self.get_json('api.coinex.com', '/v1/market/ticker?market=grsbtc')
-        if ccy != "BTC":
-            json2 = await self.get_json('api.coingecko.com', '/api/v3/simple/price?ids=bitcoin&vs_currencies=%s' % ccy)
-            return {ccy: to_decimal(json1['data']['ticker']['last'])*to_decimal(json2['bitcoin'][ccy.lower()])}
-        return {ccy: to_decimal(json1['data']['ticker']['last'])}
 
 class CoinGecko(ExchangeBase):
 
@@ -294,15 +286,6 @@ class CryptoCompare(ExchangeBase):
         result = await self.get_json('min-api.cryptocompare.com', '/data/histoday?fsym=GRS&tsym={}&limit=100&aggregate=1&extraParams=ElectrumGRS'.format(ccy))
         result = result.get('Data', [])
         return dict((datetime.fromtimestamp(i['time']).strftime('%Y-%m-%d'), float(i['close'])) for i in result)
-
-class Upbit(ExchangeBase):
-
-    async def get_rates(self, ccy):
-        json1 = await self.get_json('api.upbit.com', '/v1/ticker?markets=BTC-GRS')
-        if ccy != "BTC":
-            json2 = await self.get_json('api.coingecko.com', '/api/v3/simple/price?ids=bitcoin&vs_currencies=%s' % ccy)
-            return {ccy: to_decimal(json1[0]['trade_price'])*to_decimal(json2['bitcoin'][ccy.lower()])}
-        return {ccy: to_decimal(json1[0]['trade_price'])}
 
 def dictinvert(d):
     inv = {}
