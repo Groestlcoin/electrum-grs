@@ -15,8 +15,8 @@ LIGHTNING_URI_SCHEME = 'lightning'
 
 # note: URI scheme handler registrations are duplicated all over the codebase:
 # - for Android:  contrib/android/bitcoin_intent.xml
-# - for Linux Desktop:  electrum.desktop
-# - for Windows (setup.exe):  contrib/build-wine/electrum.nsi
+# - for Linux Desktop:  electrum-grs.desktop
+# - for Windows (setup.exe):  contrib/build-wine/electrum-grs.nsi
 # - for macOS:  contrib/osx/pyinstaller.spec
 
 
@@ -57,7 +57,7 @@ def parse_bip21_URI(uri: str) -> dict:
     out = {k: v[0] for k, v in pq.items()}
     if address:
         if not bitcoin.is_address(address):
-            raise InvalidBitcoinURI(f"Invalid bitcoin address: {address}")
+            raise InvalidBitcoinURI(f"Invalid groestlcoin address: {address}")
         out['address'] = address
     if 'amount' in out:
         am = out['amount']
