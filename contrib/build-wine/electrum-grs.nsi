@@ -189,7 +189,7 @@ Section
   CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME} Testnet.lnk" "$INSTDIR\electrum-grs-${PRODUCT_VERSION}.exe" "--testnet" "$INSTDIR\electrum-grs-${PRODUCT_VERSION}.exe" 0
 
 
-  ;Links groestlcoin: and lightning: URIs to Electrum-GRS
+  ;Links groestlcoin:, lightning: and lnurl LUD-17 URIs to Electrum-GRS
   WriteRegStr HKCU "Software\Classes\groestlcoin" "" "URL:groestlcoin Protocol"
   WriteRegStr HKCU "Software\Classes\groestlcoin" "URL Protocol" ""
   WriteRegStr HKCU "Software\Classes\groestlcoin" "DefaultIcon" "$\"$INSTDIR\electrum-grs.ico, 0$\""
@@ -198,6 +198,14 @@ Section
   WriteRegStr HKCU "Software\Classes\lightning" "URL Protocol" ""
   WriteRegStr HKCU "Software\Classes\lightning" "DefaultIcon" "$\"$INSTDIR\electrum-grs.ico, 0$\""
   WriteRegStr HKCU "Software\Classes\lightning\shell\open\command" "" "$\"$INSTDIR\electrum-grs-${PRODUCT_VERSION}.exe$\" $\"%1$\""
+  WriteRegStr HKCU "Software\Classes\lnurlp" "" "URL:lnurlp Protocol"
+  WriteRegStr HKCU "Software\Classes\lnurlp" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\lnurlp" "DefaultIcon" "$\"$INSTDIR\electrum-grs.ico, 0$\""
+  WriteRegStr HKCU "Software\Classes\lnurlp\shell\open\command" "" "$\"$INSTDIR\electrum-grs-${PRODUCT_VERSION}.exe$\" $\"%1$\""
+  WriteRegStr HKCU "Software\Classes\lnurlw" "" "URL:lnurlw Protocol"
+  WriteRegStr HKCU "Software\Classes\lnurlw" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\lnurlw" "DefaultIcon" "$\"$INSTDIR\electrum-grs.ico, 0$\""
+  WriteRegStr HKCU "Software\Classes\lnurlw\shell\open\command" "" "$\"$INSTDIR\electrum-grs-${PRODUCT_VERSION}.exe$\" $\"%1$\""
 
   ;Adds an uninstaller possibility to Windows Uninstall or change a program section
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "DisplayName" "$(^Name)"
@@ -229,6 +237,9 @@ Section "Uninstall"
   RMDir  "$SMPROGRAMS\${PRODUCT_NAME}"
 
   DeleteRegKey HKCU "Software\Classes\groestlcoin"
+  DeleteRegKey HKCU "Software\Classes\lightning"
+  DeleteRegKey HKCU "Software\Classes\lnurlp"
+  DeleteRegKey HKCU "Software\Classes\lnurlw"
   DeleteRegKey HKCU "Software\${PRODUCT_NAME}"
   DeleteRegKey HKCU "${PRODUCT_UNINST_KEY}"
 SectionEnd

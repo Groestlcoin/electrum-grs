@@ -15,7 +15,7 @@ libusb1>=1.6
 
 # device plugin: ledger
 btchip-python @ https://github.com/EchterAgo/btchip-python/archive/f65cca5dea1cae6031accc961b5754d02c52a106.tar.gz
-ledger-bitcoin>=0.2.0
+ledger-bitcoin>=0.4.1,<1.0
 hidapi
 
 # device plugin: coldcard

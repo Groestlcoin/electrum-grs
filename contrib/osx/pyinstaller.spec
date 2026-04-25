@@ -136,7 +136,7 @@ app = BUNDLE(
         'CFBundleURLTypes':
             [{
                 'CFBundleURLName': 'groestlcoin',
-                'CFBundleURLSchemes': ['groestlcoin', 'lightning', ],
+                'CFBundleURLSchemes': ['groestlcoin', 'lightning', 'lnurlp', 'lnurlw', ],
             }],
         'LSMinimumSystemVersion': '11',
         'NSCameraUsageDescription': 'Electrum-GRS would like to access the camera to scan for QR codes',

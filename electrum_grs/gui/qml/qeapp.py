@@ -23,6 +23,7 @@ from electrum_grs.network import Network
 from electrum_grs.plugin import run_hook
 from electrum_grs.gui.common_qt.util import get_font_id
 from electrum_grs.util import profiler
+from electrum_grs.lnurl import SUPPORTED_LNURL_SCHEMES
 
 from .qeconfig import QEConfig
 from .qedaemon import QEDaemon
@@ -235,7 +236,9 @@ class QEAppController(BaseCrashReporter, QObject):
         data = str(intent.getDataString())
         self.logger.debug(f'received intent: {repr(data)}')
         scheme = str(intent.getScheme()).lower()
-        if scheme == BITCOIN_BIP21_URI_SCHEME or scheme == LIGHTNING_URI_SCHEME:
+        if scheme == BITCOIN_BIP21_URI_SCHEME \
+                or scheme == LIGHTNING_URI_SCHEME \
+                or scheme in SUPPORTED_LNURL_SCHEMES:
             self.uriReceived.emit(data)
 
     def startup_finished(self):

@@ -26,7 +26,7 @@
 import asyncio
 from decimal import Decimal
 from functools import partial
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Optional, Union, Sequence
 from concurrent.futures import Future
 from enum import Enum, auto
 
@@ -39,7 +39,7 @@ from electrum_grs.i18n import _
 from electrum_grs.util import (UserCancelled, quantize_feerate, profiler, NotEnoughFunds, NoDynamicFeeEstimates,
                            get_asyncio_loop, wait_for2, UserFacingException)
 from electrum_grs.plugin import run_hook
-from electrum_grs.transaction import PartialTransaction, PartialTxOutput
+from electrum_grs.transaction import PartialTransaction, PartialTxOutput, Transaction
 from electrum_grs.wallet import InternalAddressCorruption
 from electrum_grs.bitcoin import DummyAddress
 from electrum_grs.fee_policy import FeePolicy, FixedFeePolicy, FeeMethod
@@ -82,7 +82,7 @@ class TxEditor(WindowModalDialog, QtEventListener, Logger):
             output_value: Union[int, str],
             payee_outputs: Optional[list[PartialTxOutput]] = None,
             context: TxEditorContext = TxEditorContext.PAYMENT,
-            batching_candidates=None,
+            batching_candidates: Sequence[Transaction] = None,
     ):
 
         WindowModalDialog.__init__(self, window, title=title)
@@ -106,7 +106,7 @@ class TxEditor(WindowModalDialog, QtEventListener, Logger):
         self.needs_update = False
         self.context = context
         self.is_preview = False
-        self._base_tx = None # for batching
+        self._base_tx = None  # type: Optional[Transaction]  # for batching
         self.batching_candidates = batching_candidates
 
         self.swap_manager = self.wallet.lnworker.swap_manager if self.wallet.has_lightning() else None
@@ -1123,7 +1123,7 @@ class ConfirmTxDialog(TxEditor):
         output_value: Union[int, str],
         payee_outputs: Optional[list[PartialTxOutput]] = None,
         context: TxEditorContext = TxEditorContext.PAYMENT,
-        batching_candidates=None,
+        batching_candidates: Sequence[Transaction] = None,
     ):
 
         TxEditor.__init__(
