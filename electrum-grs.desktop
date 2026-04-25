@@ -15,7 +15,7 @@ StartupNotify=true
 StartupWMClass=electrum-grs
 Terminal=false
 Type=Application
-MimeType=x-scheme-handler/groestlcoin;x-scheme-handler/lightning;
+MimeType=x-scheme-handler/groestlcoin;x-scheme-handler/lightning;x-scheme-handler/lnurlp;x-scheme-handler/lnurlw;
 Actions=Testnet;
 Keywords=crypto;currency;GRS
 

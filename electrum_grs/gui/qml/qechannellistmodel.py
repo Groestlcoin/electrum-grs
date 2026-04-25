@@ -14,7 +14,7 @@ from .qetypes import QEAmount
 from .qemodelfilter import QEFilterProxyModel
 
 if TYPE_CHECKING:
-    from electrum.wallet import Abstract_Wallet
+    from electrum_grs.wallet import Abstract_Wallet
 
 
 class QEChannelListModel(QAbstractListModel, QtEventListener):
