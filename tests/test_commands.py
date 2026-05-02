@@ -20,7 +20,7 @@ from electrum_grs.submarine_swaps import SwapOffer, SwapFees, NostrTransport
 from electrum_grs.transaction import Transaction, TxOutput, tx_from_any
 from electrum_grs.util import UserFacingException, NotEnoughFunds
 from electrum_grs.crypto import sha256
-from electrum_grs.lnaddr import lndecode
+from electrum_grs.bolt11 import decode_bolt11_invoice
 from electrum_grs.daemon import Daemon
 from electrum_grs import json_db
 
@@ -508,7 +508,7 @@ class TestCommandsTestnet(ElectrumTestCase):
                 expiry=3500,
                 wallet=wallet,
             )
-        invoice = lndecode(invoice=result['invoice'])
+        invoice = decode_bolt11_invoice(invoice=result['invoice'])
         assert invoice.paymenthash.hex() == payment_hash
         assert wallet.lnworker.get_payment_info(bytes.fromhex(payment_hash), direction=RECEIVED)
         assert payment_hash in wallet.lnworker.dont_expire_htlcs

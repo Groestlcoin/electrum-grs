@@ -3,16 +3,12 @@ from typing import TYPE_CHECKING, Sequence
 import PyQt6.QtGui as QtGui
 import PyQt6.QtWidgets as QtWidgets
 import PyQt6.QtCore as QtCore
-from PyQt6.QtWidgets import QLabel, QLineEdit, QHBoxLayout, QGridLayout
+from PyQt6.QtWidgets import QLabel, QHBoxLayout
 
-from electrum_grs.util import EventListener, ShortID
+from electrum_grs.util import ShortID
 from electrum_grs.i18n import _
-from electrum_grs.util import format_time
-from electrum_grs.lnutil import format_short_channel_id, LOCAL, REMOTE, UpdateAddHtlc, Direction
-from electrum_grs.lnchannel import htlcsum, Channel, AbstractChannel, HTLCWithStatus
-from electrum_grs.lnaddr import LnAddr, lndecode
-from electrum_grs.bitcoin import COIN
-from electrum_grs.wallet import Abstract_Wallet
+from electrum_grs.lnutil import LOCAL, REMOTE, UpdateAddHtlc, Direction
+from electrum_grs.lnchannel import Channel, AbstractChannel, HTLCWithStatus
 
 from electrum_grs.gui.common_qt.util import QtEventListener, qt_event_listener
 from .util import Buttons, CloseButton, ShowQRLineEdit, MessageBoxMixin, WWLabel, VLine

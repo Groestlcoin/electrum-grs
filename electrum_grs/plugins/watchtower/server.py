@@ -1,14 +1,7 @@
-import os
-import asyncio
-from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from aiohttp import web
 
-from electrum_grs.util import log_exceptions, ignore_exceptions
-from electrum_grs.logging import Logger
-from electrum_grs.util import EventListener
-from electrum_grs.lnaddr import lndecode
 from electrum_grs.daemon import AuthenticatedServer
 
 
