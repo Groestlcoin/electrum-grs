@@ -280,11 +280,7 @@ class BOLT11Addr:
             return
         assert isinstance(value, Decimal)
         if value.is_nan() or not (0 <= value <= TOTAL_COIN_SUPPLY_LIMIT_IN_BTC):
-<<<<<<<< HEAD:electrum_grs/lnaddr.py
-            raise LnInvoiceException(f"amount is out-of-bounds: {value!r} GRS")
-========
-            raise BOLT11InvoiceException(f"amount is out-of-bounds: {value!r} BTC")
->>>>>>>> upstream/master:electrum_grs/bolt11.py
+            raise BOLT11InvoiceException(f"amount is out-of-bounds: {value!r} GRS")
         if value * 10**12 % 10:
             # max resolution is millisatoshi
             raise BOLT11InvoiceException(f"Cannot encode {value!r}: too many decimal places")
