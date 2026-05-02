@@ -233,7 +233,7 @@ class TestHistoryExport(ElectrumTestCase):
         self.patch_timezone.stop()
         time.tzset()
 
-    @mock.patch('electrum.wallet.run_hook')
+    @mock.patch('electrum_grs.wallet.run_hook')
     @mock.patch.object(storage.WalletStorage, 'write')
     @mock.patch.object(storage.WalletStorage, 'append')
     async def test_export_history_to_file(self, _mock_append, _mock_write, mock_run_hook):

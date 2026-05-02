@@ -268,7 +268,7 @@ class TestTxBatcher(ElectrumTestCase):
 
         # does not return sweep input if ctx fee is already higher than target fee
         with mock.patch.object(wallet.adb, 'get_tx_fee', return_value=2000), \
-                mock.patch.object(electrum.fee_policy.FeePolicy, 'estimate_fee', return_value=1000):
+                mock.patch.object(electrum_grs.fee_policy.FeePolicy, 'estimate_fee', return_value=1000):
             to_sweep_high_fee = anchor_batch._to_sweep_after(tx=None)
         self.assertFalse(to_sweep_high_fee)
 

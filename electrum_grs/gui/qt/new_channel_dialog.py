@@ -16,7 +16,7 @@ from .amountedit import BTCAmountEdit
 from .my_treeview import create_toolbar_with_menu
 
 if TYPE_CHECKING:
-    from electrum.transaction import PartialTxInput
+    from electrum_grs.transaction import PartialTxInput
     from .main_window import ElectrumWindow
 
 

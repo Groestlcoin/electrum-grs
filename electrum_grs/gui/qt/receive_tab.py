@@ -20,7 +20,7 @@ from .util import read_QIcon, WWLabel, MessageBoxMixin, MONOSPACE_FONT, get_icon
 
 if TYPE_CHECKING:
     from .main_window import ElectrumWindow
-    from electrum.wallet import Request
+    from electrum_grs.wallet import Request
 
 
 class ReceiveTab(QWidget, MessageBoxMixin, Logger):

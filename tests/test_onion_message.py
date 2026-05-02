@@ -558,7 +558,7 @@ class TestOnionMessageUtils(TestPeer):
                 )
 
         # patch is_onion_message_node so we don't have to inject node announcements
-        with patch('electrum.onion_message.is_onion_message_node', return_value=True):
+        with patch('electrum_grs.onion_message.is_onion_message_node', return_value=True):
             r = create_route_to_introduction_point(alice, blinded_path, introduction_point, session_key)
         peer, path_key, hops_data, blinded_node_ids = r
         # alice hands the onion over to bob

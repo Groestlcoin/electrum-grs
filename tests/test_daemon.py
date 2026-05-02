@@ -358,7 +358,7 @@ class TestLoadWallet(DaemonTestCase):
         assert constants.net.TESTNET is False
 
         # case 1: fresh wallet created on wrong network
-        with mock.patch("electrum.constants.net", constants.BitcoinTestnet):
+        with mock.patch("electrum_grs.constants.net", constants.BitcoinTestnet):
             path = self._restore_wallet_from_text("9dk", password=None)
         with self.assertRaises(util.WalletFileException):
             wallet = self.daemon.load_wallet(path, password=None, upgrade=True)
