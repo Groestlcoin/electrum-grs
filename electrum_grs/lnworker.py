@@ -199,6 +199,7 @@ LNWALLET_FEATURES = (
     BASE_FEATURES
     | LnFeatures.OPTION_DATA_LOSS_PROTECT_REQ
     | LnFeatures.OPTION_STATIC_REMOTEKEY_REQ
+    | LnFeatures.OPTION_ANCHORS_REQ
     | LnFeatures.VAR_ONION_REQ
     | LnFeatures.PAYMENT_SECRET_REQ
     | LnFeatures.BASIC_MPP_OPT
@@ -1014,8 +1015,6 @@ class LNWallet(Logger):
         Logger.__init__(self)
         if features is None:
             features = LNWALLET_FEATURES
-            if self.config.ENABLE_ANCHOR_CHANNELS:
-                features |= LnFeatures.OPTION_ANCHORS_OPT
             if self.config.OPEN_ZEROCONF_CHANNELS:
                 features |= LnFeatures.OPTION_ZEROCONF_OPT
             if self.config.EXPERIMENTAL_LN_FORWARD_PAYMENTS or self.config.EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS:
@@ -1597,8 +1596,7 @@ class LNWallet(Logger):
             zeroconf: bool = False,
             opening_base_fee_msat: Optional[int] = None,
             password=None):
-        if self.config.ENABLE_ANCHOR_CHANNELS:
-            self.wallet.unlock(password)
+        self.wallet.unlock(password)
         coins = self.wallet.get_spendable_coins(None)
         node_id = peer.pubkey
         fee_policy = FeePolicy(self.config.FEE_POLICY)
@@ -1692,11 +1690,13 @@ class LNWallet(Logger):
         upfront_shutdown_script = b''
 
         assert channel_type is not None
+        channel_type.check_combinations()  # test if raises
         if channel_type & ChannelType.OPTION_ANCHORS:  # anchors
             static_payment_key = self.static_payment_key
             static_remotekey = None
         else:  # static_remotekey
             assert channel_type & channel_type.OPTION_STATIC_REMOTEKEY
+            assert self.config.TEST_LN_OPEN_SRK_CHANNELS
             wallet = self.wallet
             assert wallet.txin_type == 'p2wpkh'
             addr = wallet.get_new_sweep_address_for_channel()
@@ -1772,8 +1772,7 @@ class LNWallet(Logger):
             coins=coins,
             outputs=outputs,
             fee_policy=fee_policy,
-            # we do not know yet if peer accepts anchors, just assume they do
-            is_anchor_channel_opening=self.config.ENABLE_ANCHOR_CHANNELS,
+            is_anchor_channel_opening=not self.config.TEST_LN_OPEN_SRK_CHANNELS,
         )
         tx.set_rbf(False)
         # rm randomness from locktime, as we use the locktime as entropy for deriving the funding_privkey
@@ -1861,12 +1860,19 @@ class LNWallet(Logger):
     @log_exceptions
     async def pay_invoice(
             self, invoice: Invoice, *,
-            amount_msat: int = None,
+            amount_msat: int = None,  # to overwrite amt in invoice
             attempts: int = None,  # used only in unit tests
             full_path: LNPaymentPath = None,
-            channels: Optional[Sequence[Channel]] = None,
-            budget: Optional[PaymentFeeBudget] = None,
+            channels: Optional[Sequence[Channel]] = None,  # my own direct channels
+            budget: Optional[PaymentFeeBudget] = None,  # to limit max fee
     ) -> Tuple[bool, List[HtlcLog]]:
+        """Attempt to pay a Lightning invoice (find routes, do MPP, send HTLCs).
+
+        Note: this does NOT directly send money, it sends HTLC(s), which is a conditional contract.
+              The intended recipient (or any node) can only claim the HTLCs by revealing the correct preimage.
+              When paying a hold-invoice, or during a submarine swap, it is often the case that the recipient
+              does not YET know the preimage, and hence they cannot take the money until later.
+        """
         bolt11 = invoice.lightning_invoice
         lnaddr = self._check_bolt11_invoice(bolt11, amount_msat=amount_msat)
         min_final_cltv_delta = lnaddr.get_min_final_cltv_delta()
@@ -3707,10 +3713,7 @@ class LNWallet(Logger):
         to sweep funds after a channel has been force closed).
 
         The creation of lightning channels in watching-only wallets
-        has been disabled for anchor channels. Note that it is still
-        possible to create non-anchor channels, see
-        config.ENABLE_ANCHOR_CHANNELS.
-
+        has been disabled for anchor channels.
         """
         xpub = self.wallet.get_fingerprint()
         backup_bytes = self.create_channel_backup(channel_id).to_bytes()

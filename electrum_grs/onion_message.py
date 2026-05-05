@@ -237,7 +237,7 @@ def create_route_to_introduction_point(
     )
     hops_data.append(final_hop_pre_ip)
 
-    encrypt_hops_recipient_data(tlv_stream_name='onionmsg_tlv', hops_data=hops_data, hop_shared_secrets=hop_shared_secrets)
+    encrypt_hops_recipient_data(hops_data=hops_data, hop_shared_secrets=hop_shared_secrets)
     path_key = ecc.ECPrivkey(session_key).get_public_key_bytes()
 
     return peer, path_key, hops_data, blinded_node_ids
@@ -366,7 +366,7 @@ def send_onion_message_to(
         payment_path_pubkeys = [edge.end_node for edge in path]
 
         hop_shared_secrets, blinded_node_ids = get_shared_secrets_along_route(payment_path_pubkeys, session_key)
-        encrypt_hops_recipient_data('onionmsg_tlv', hops_data, hop_shared_secrets)
+        encrypt_hops_recipient_data(hops_data, hop_shared_secrets)
         packet = new_onion_packet(blinded_node_ids, session_key, hops_data)
         packet_b = packet.to_bytes()
 
@@ -835,7 +835,7 @@ class OnionMessageManager(Logger):
 
     def process_onion_message_packet(self, blinding: bytes, onion_packet: OnionPacket) -> None:
         our_privkey = blinding_privkey(self.lnwallet.node_keypair.privkey, blinding)
-        processed_onion_packet = process_onion_packet(onion_packet, our_privkey, is_onion_message=True, tlv_stream_name='onionmsg_tlv')
+        processed_onion_packet = process_onion_packet(onion_packet, our_privkey, tlv_stream_name='onionmsg_tlv')
         payload = processed_onion_packet.hop_data.payload
 
         self.logger.debug(f'onion peeled: {processed_onion_packet!r}')
