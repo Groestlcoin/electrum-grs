@@ -1977,6 +1977,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             raise Exception("Some inputs already contain signatures!")
         if inputs is None:
             inputs = []
+        assert all(isinstance(o, PartialTxOutput) for o in outputs), [type(o) for o in outputs]
         # make sure inputs and coins do not overlap
         if inputs:
             input_set = set(txin.prevout for txin in inputs)
@@ -3903,26 +3904,20 @@ class Imported_Wallet(Simple_Wallet):
         x = self.db.get_imported_address(address)
         return x.get('pubkey') if x else None
 
-    def import_private_keys(self, keys: Sequence[str], password: Optional[str], *,
-                            write_to_disk=True) -> Tuple[List[str], List[Tuple[str, str]]]:
-        good_addr = []  # type: List[str]
-        bad_keys = []  # type: List[Tuple[str, str]]
-        for key in keys:
-            try:
-                txin_type, pubkey = self.keystore.import_privkey(key, password)
-            except Exception as e:
-                bad_keys.append((key, _('invalid private key') + f': {e}'))
-                continue
-            if txin_type not in ('p2pkh', 'p2wpkh', 'p2wpkh-p2sh'):
-                bad_keys.append((key, _('not implemented type') + f': {txin_type}'))
-                continue
+    def _add_imported_addresses(self, good_inputs):
+        for txin_type, pubkey in good_inputs:
             addr = bitcoin.pubkey_to_address(txin_type, pubkey)
-            good_addr.append(addr)
             self.db.add_imported_address(addr, {'type': txin_type, 'pubkey': pubkey})
             self.adb.add_address(addr)
+
+    def import_private_keys(self, keys: Sequence[str], password: Optional[str], *,
+                            write_to_disk=True) -> Tuple[List[str], List[Tuple[str, str]]]:
+        good_inputs, bad_keys = self.keystore.import_private_keys(keys, password)
         self.save_keystore()
+        self._add_imported_addresses(good_inputs)
         if write_to_disk:
             self.save_db()
+        good_addr = [bitcoin.pubkey_to_address(txin_type, pubkey) for txin_type, pubkey in good_inputs]
         return good_addr, bad_keys
 
     def import_private_key(self, key: str, password: Optional[str]) -> str:
@@ -4414,20 +4409,22 @@ def create_new_wallet(
     storage = WalletStorage(path, allow_partial_writes=config.WALLET_PARTIAL_WRITES)
     if storage.file_exists():
         raise UserFacingException("Remove the existing wallet first!")
+    if encrypt_file:
+        storage.set_password(password, StorageEncryptionVersion.USER_PASSWORD)
     db = WalletDB('', storage=storage, upgrade=True)
-
     seed = Mnemonic('en').make_seed(seed_type=seed_type)
     k = keystore.from_seed(seed, passphrase=passphrase)
+    k.update_password(None, password)
     db.put('keystore', k.dump())
     db.put('wallet_type', 'standard')
     if k.can_have_deterministic_lightning_xprv():
-        db.put('lightning_xprv', k.get_lightning_xprv(None))
+        db.put('lightning_xprv', k.get_lightning_xprv(password))
     if gap_limit is not None:
         db.put('gap_limit', gap_limit)
     if gap_limit_for_change is not None:
         db.put('gap_limit_for_change', gap_limit_for_change)
+    db.set_keystore_encryption(bool(password))
     wallet = Wallet(db, config=config)
-    wallet.update_password(old_pw=None, new_pw=password, encrypt_storage=encrypt_file)
     wallet.synchronize()
     msg = "Please keep your seed in a safe place; if you lose it, you will not be able to restore your wallet."
     wallet.save_db()
@@ -4449,15 +4446,18 @@ def restore_wallet_from_text(
     """Restore a wallet from text. Text can be a seed phrase, a master
     public key, a master private key, a list of groestlcoin addresses
     or groestlcoin private keys."""
+    if encrypt_file is None:
+        encrypt_file = True
     if path is None:  # create wallet in-memory
         storage = None
     else:
         storage = WalletStorage(path, allow_partial_writes=config.WALLET_PARTIAL_WRITES)
         if storage.file_exists():
             raise UserFacingException("Remove the existing wallet first!")
-    if encrypt_file is None:
-        encrypt_file = True
+        if encrypt_file:
+            storage.set_password(password, StorageEncryptionVersion.USER_PASSWORD)
     db = WalletDB('', storage=storage, upgrade=True)
+    db.set_keystore_encryption(bool(password))
     text = text.strip()
     if keystore.is_address_list(text):
         wallet = Imported_Wallet(db, config=config)
@@ -4467,14 +4467,16 @@ def restore_wallet_from_text(
         if not good_inputs:
             raise UserFacingException("None of the given addresses can be imported")
     elif keystore.is_private_key_list(text, allow_spaces_inside_key=False):
-        k = keystore.Imported_KeyStore({})
-        db.put('keystore', k.dump())
-        wallet = Imported_Wallet(db, config=config)
         keys = keystore.get_private_keys(text, allow_spaces_inside_key=False)
-        good_inputs, bad_inputs = wallet.import_private_keys(keys, None, write_to_disk=False)
+        k = keystore.Imported_KeyStore({})
+        good_inputs, bad_inputs = k.import_private_keys(keys, None)
         # FIXME tell user about bad_inputs
         if not good_inputs:
             raise UserFacingException("None of the given privkeys can be imported")
+        k.update_password(None, password)
+        db.put('keystore', k.dump())
+        wallet = Imported_Wallet(db, config=config)
+        wallet._add_imported_addresses(good_inputs)
     else:
         if keystore.is_master_key(text):
             k = keystore.from_master_key(text)
@@ -4484,6 +4486,8 @@ def restore_wallet_from_text(
                 db.put('lightning_xprv', k.get_lightning_xprv(None))
         else:
             raise UserFacingException("Seed or key not recognized")
+        if not k.is_watching_only():
+            k.update_password(None, password)
         db.put('keystore', k.dump())
         db.put('wallet_type', 'standard')
         if gap_limit is not None:
@@ -4493,7 +4497,6 @@ def restore_wallet_from_text(
         wallet = wallet_factory(db, config=config)
     if db.storage:
         assert not db.storage.file_exists(), "file was created too soon! plaintext keys might have been written to disk"
-    wallet.update_password(old_pw=None, new_pw=password, encrypt_storage=encrypt_file)
     wallet.synchronize()
     msg = ("This wallet was restored offline. It may contain more addresses than displayed. "
            "Start a daemon and use load_wallet to sync its history.")
