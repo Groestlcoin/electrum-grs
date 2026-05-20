@@ -4,27 +4,27 @@ import os
 from pprint import pformat
 from typing import NamedTuple, Tuple, Dict, Mapping, TYPE_CHECKING, Sequence
 
-import electrum
-import electrum.trampoline
-from electrum import (
+import electrum_grs
+import electrum_grs.trampoline
+from electrum_grs import (
     bitcoin, lnpeer, lnchannel, lnutil, util,
 )
-from electrum.coinchooser import PRNG
-from electrum.network import ProxySettings
-from electrum.bolt11 import BOLT11Addr
-from electrum.lnpeer import Peer
-from electrum.lnutil import (
+from electrum_grs.coinchooser import PRNG
+from electrum_grs.network import ProxySettings
+from electrum_grs.bolt11 import BOLT11Addr
+from electrum_grs.lnpeer import Peer
+from electrum_grs.lnutil import (
     LnFeatures, PaymentFeeBudget, LOCAL, REMOTE, ChannelType, LocalConfig, RemoteConfig,
     OnlyPubkeyKeypair, secret_to_pubkey,
 )
-from electrum.lnchannel import ChannelState, Channel
-from electrum.lnrouter import LNPathFinder
-from electrum.channel_db import ChannelDB
-from electrum.lnworker import LNWallet, PaySession
-from electrum.simple_config import SimpleConfig
-from electrum.stored_dict import StoredDict
-from electrum.fee_policy import FeeTimeEstimates, FEE_ETA_TARGETS
-from electrum.wallet import  Standard_Wallet
+from electrum_grs.lnchannel import ChannelState, Channel
+from electrum_grs.lnrouter import LNPathFinder
+from electrum_grs.channel_db import ChannelDB
+from electrum_grs.lnworker import LNWallet, PaySession
+from electrum_grs.simple_config import SimpleConfig
+from electrum_grs.stored_dict import StoredDict
+from electrum_grs.fee_policy import FeeTimeEstimates, FEE_ETA_TARGETS
+from electrum_grs.wallet import  Standard_Wallet
 
 from . import restore_wallet_from_text__for_unittest
 
