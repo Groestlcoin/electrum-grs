@@ -189,6 +189,7 @@ BASE_FEATURES = (
     | LnFeatures.OPTION_STATIC_REMOTEKEY_OPT
     | LnFeatures.VAR_ONION_OPT
     | LnFeatures.PAYMENT_SECRET_OPT
+    | LnFeatures.OPTION_ANCHORS_OPT
     | LnFeatures.OPTION_UPFRONT_SHUTDOWN_SCRIPT_OPT
     | LnFeatures.OPTION_CHANNEL_TYPE_OPT
 )
@@ -722,8 +723,10 @@ class LNGossip(Logger):
         await self.channel_db.data_loaded.wait()
         while True:
             if len(self.unknown_ids) == 0:
-                self.channel_db.prune_old_policies(self.max_age)
-                self.channel_db.prune_orphaned_channels()
+                def _maintain():
+                    self.channel_db.prune_old_policies(self.max_age)
+                    self.channel_db.prune_orphaned_channels()
+                await asyncio.to_thread(_maintain)
             await asyncio.sleep(120)
 
     async def _maintain_forwarding_gossip(self):
@@ -1007,6 +1010,7 @@ class LNWallet(Logger):
         self.wallet = wallet
         self.config = wallet.config
         self.db = wallet.db
+        self.instantiation_timestamp = int(time.time())
         self.node_keypair = generate_keypair(BIP32Node.from_xkey(xprv), LnKeyFamily.NODE_KEY)
         self.backup_key = generate_keypair(BIP32Node.from_xkey(xprv), LnKeyFamily.BACKUP_CIPHER).privkey
         self.static_payment_key = generate_keypair(BIP32Node.from_xkey(xprv), LnKeyFamily.PAYMENT_BASE)
@@ -1215,7 +1219,6 @@ class LNWallet(Logger):
         self.onion_message_manager.start_network(network=network)
 
         for coro in [
-                self.lnwatcher.trigger_callbacks(),  # shortcut (don't block) if funding tx locked and verified
                 self.reestablish_peers_and_channels(),
                 self.sync_with_remote_watchtower(),
         ]:
@@ -1230,7 +1233,7 @@ class LNWallet(Logger):
             await self.wait_for_received_pending_htlcs_to_get_removed()
         await self.lnpeermgr.stop()
         if self.lnwatcher:
-            self.lnwatcher.stop()
+            await self.lnwatcher.stop()
             self.lnwatcher = None
         if self.swap_manager and self.swap_manager.network:  # may not be present in tests
             await self.swap_manager.stop()
@@ -2585,7 +2588,8 @@ class LNWallet(Logger):
             for end_node, edge_rest in zip(private_path_nodes, private_path_rest):
                 short_channel_id, fee_base_msat, fee_proportional_millionths, cltv_delta = edge_rest
                 short_channel_id = ShortChannelID(short_channel_id)
-                if (our_chan := self.get_channel_by_short_id(short_channel_id)) is not None:
+                our_chan = self.get_channel_by_short_id(short_channel_id)
+                if our_chan is not None and start_node == self.node_keypair.pubkey:
                     # check if the channel is one of our channels and frozen for sending
                     if our_chan.is_frozen_for_sending():
                         continue
@@ -3510,8 +3514,10 @@ class LNWallet(Logger):
         else:
             return False
 
-    def num_sats_can_rebalance(self, chan1, chan2):
+    def num_sats_can_rebalance(self, chan1: Channel, chan2: Channel) -> int:
         # TODO: we should be able to spend 'max', with variable fee
+        if chan1.is_frozen_for_sending() or chan2.is_frozen_for_receiving():
+            return 0
         n1 = chan1.available_to_spend(LOCAL)
         n1 -= self.estimate_fee_reserve_for_total_amount(n1)
         n2 = chan2.available_to_spend(REMOTE)
@@ -3562,6 +3568,8 @@ class LNWallet(Logger):
             raise Exception('Rebalance requires two different channels')
         if self.uses_trampoline() and chan1.node_id == chan2.node_id:
             raise Exception('Rebalance requires channels from different trampolines')
+        if chan1.is_frozen_for_sending() or chan2.is_frozen_for_receiving():  # the gui should not allow this
+            raise Exception('Cannot rebalance through frozen channels')
         payment_hash = self.create_payment_info(
             amount_msat=amount_msat,
             exp_delay=3600,

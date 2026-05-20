@@ -45,9 +45,9 @@ from electrum_grs.lnutil import LnFeatures, MIN_FINAL_CLTV_DELTA_ACCEPTED, MAXIM
 from electrum_grs.util import OldTaskGroup, log_exceptions, random_shuffled_copy
 
 
-def now():
+def now() -> float:
     return time.time()
-
+assert type(now()) == float, "OnionMessageManager requires float timestamps"
 
 if TYPE_CHECKING:
     from electrum_grs.lnworker import LNWallet
