@@ -50,7 +50,7 @@ class TrezorClientBase(HardwareClientBase, Logger):
             TrezorClient.is_outdated = lambda *args, **kwargs: False
 
         self.client = get_default_client(
-            app_name="Electrum",
+            app_name="Electrum-GRS",
             path_or_transport=transport,
             button_callback=self.button_request,
             pin_callback=self.get_pin,
