@@ -140,6 +140,7 @@ class Peer(Logger, EventListener):
         self._num_gossip_messages_forwarded = 0
         self._processed_onion_cache = LRUCache(maxsize=100)  # type: LRUCache[bytes, ProcessedOnionPacket]
         self._last_commitsig_sent_time = time.monotonic()
+        self._last_ping_recv_time = min(0, time.monotonic())
 
     def send_message(self, message_name: str, **kwargs):
         assert util.get_running_loop() == util.get_asyncio_loop(), f"this must be run on the asyncio thread!"
@@ -151,6 +152,7 @@ class Peer(Logger, EventListener):
         raw_msg = encode_msg(message_name, **kwargs)
         self._store_raw_msg_if_local_update(raw_msg, message_name=message_name, channel_id=kwargs.get("channel_id"))
         self.transport.send_bytes(raw_msg)
+        # could `await self.transport.writer.drain()`, but not async
 
     def _store_raw_msg_if_local_update(self, raw_msg: bytes, *, message_name: str, channel_id: Optional[bytes]):
         is_commitment_signed = message_name == "commitment_signed"
@@ -371,9 +373,21 @@ class Peer(Logger, EventListener):
                     self.schedule_force_closing(cid)
         raise GracefulDisconnect
 
-    def on_ping(self, payload):
+    async def on_ping(self, payload):
+        elapsed_since_last = time.monotonic() - self._last_ping_recv_time
+        min_delay = 1.0  # seconds
+        if elapsed_since_last < min_delay:
+            self.logger.debug("remote sending PINGs too often, sleeping a bit")
+            # note: This rate-limiting helps limit our outbound traffic usage.
+            #       (max inc msg size 65 KB, max out msg size 65 KB, decoupled)
+            #       Does not really help for inbound traffic-usage:
+            #       there are many other ways for the peer to flood us, e.g. unknown 'odd' message types.
+            # note: this blocks processing *any* further incoming message from this peer
+            await asyncio.sleep(min_delay - elapsed_since_last)
+        self._last_ping_recv_time = time.monotonic()
         l = payload['num_pong_bytes']
-        self.send_message('pong', byteslen=l)
+        raw_msg = encode_msg('pong', byteslen=l)
+        await self.transport.send_bytes_and_drain(raw_msg)
 
     def on_pong(self, payload):
         self.pong_event.set()
@@ -907,6 +921,7 @@ class Peer(Logger, EventListener):
         try:
             if self.transport:
                 self.transport.close()
+                # could `await self.transport.writer.wait_closed()` with a timeout?  but not async
         except Exception:
             pass
         self.lnworker.lnpeermgr.peer_closed(self)
