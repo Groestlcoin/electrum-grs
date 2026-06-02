@@ -40,18 +40,6 @@ jobs:
         with:
           fetch-depth: 0    # for git describe / version detection
 
-      - name: Cache Wine pip
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        with:
-          path: contrib/build-wine/.cache/win*/wine_pip_cache
-          key: wine-pip-${{ hashFiles('contrib/deterministic-build/*.txt', 'contrib/build-wine/**') }}
-
-      - name: Cache Wine native lib builds (libsecp256k1, libusb, libzbar)
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        with:
-          path: contrib/build-wine/.cache/win*/build
-          key: wine-build-${{ hashFiles('contrib/make_libsecp256k1.sh', 'contrib/make_libusb.sh', 'contrib/make_zbar.sh', 'contrib/build-wine/**') }}
-
       - name: Build Windows binaries
         run: ./contrib/build-wine/build.sh
 
@@ -108,7 +96,6 @@ jobs:
         with:
           path: |
             .buildozer_qml/android/platform/build-${{ env.APK_ARCH }}/packages
-            .buildozer_qml/android/platform/build-${{ env.APK_ARCH }}/build
           key: android-buildozer-${{ env.APK_ARCH }}-${{ hashFiles('contrib/android/**', '!contrib/android/.cache') }}
 
       - name: Build APK (debug)
@@ -136,18 +123,6 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
-
-      - name: Cache AppImage pip
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        with:
-          path: contrib/build-linux/appimage/.cache/pip_cache
-          key: appimage-pip-${{ hashFiles('contrib/deterministic-build/*.txt', 'contrib/build-linux/appimage/**') }}
-
-      - name: Cache AppImage build
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        with:
-          path: contrib/build-linux/appimage/.cache/appimage
-          key: appimage-build-${{ hashFiles('contrib/make_libsecp256k1.sh', 'contrib/make_zbar.sh', 'contrib/build-linux/appimage/**') }}
 
       - name: Build AppImage
         run: ./contrib/build-linux/appimage/build.sh
