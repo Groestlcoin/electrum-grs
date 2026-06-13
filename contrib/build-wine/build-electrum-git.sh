@@ -13,7 +13,7 @@ set -e
 
 pushd "$PROJECT_ROOT"
 
-VERSION=4.6.2
+VERSION=$(python3 "$CONTRIB/print_electrum_version.py")
 info "Last commit: $VERSION"
 
 info "preparing electrum-locale."

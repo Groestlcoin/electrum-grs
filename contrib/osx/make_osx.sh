@@ -211,7 +211,7 @@ find "$VENV_DIR/lib/python$PY_VER_MAJOR/site-packages/" -type f -name '*.so' -pr
 info "Faking timestamps..."
 find . -exec touch -t '200101220000' {} + || true
 
-VERSION=$(python3 -c "import electrum_grs; print(electrum_grs.version.ELECTRUM_VERSION)")
+VERSION=$(python3 "$CONTRIB/print_electrum_version.py")
 
 info "Building binary"
 ELECTRUM_VERSION=$VERSION pyinstaller --noconfirm --clean contrib/osx/pyinstaller.spec || fail "Could not build binary"
