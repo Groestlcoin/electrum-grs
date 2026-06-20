@@ -22,7 +22,6 @@ from electrum_grs.lnrouter import LNPathFinder
 from electrum_grs.channel_db import ChannelDB
 from electrum_grs.lnworker import LNWallet, PaySession
 from electrum_grs.simple_config import SimpleConfig
-from electrum_grs.stored_dict import StoredDict
 from electrum_grs.fee_policy import FeeTimeEstimates, FEE_ETA_TARGETS
 from electrum_grs.wallet import  Standard_Wallet
 
@@ -392,7 +391,7 @@ def _create_channel_state(
             'revocation_store': {},
             'channel_type': channel_type,
     }
-    return StoredDict(state, None)
+    return state
 
 
 def create_test_channels(
