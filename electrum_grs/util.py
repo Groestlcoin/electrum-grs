@@ -55,6 +55,7 @@ import functools
 from functools import partial
 from abc import abstractmethod, ABC
 import enum
+import contextlib
 from contextlib import nullcontext, suppress
 import traceback
 import inspect
@@ -62,6 +63,7 @@ import weakref
 
 import aiohttp
 from aiohttp_socks import ProxyConnector, ProxyType
+from aiohttp_socks import ProxyConnectionError, ProxyTimeoutError, ProxyError
 import aiorpcx
 import certifi
 import dns.asyncresolver
@@ -1322,7 +1324,7 @@ def make_aiohttp_proxy_connector(proxy: 'ProxySettings', ssl_context: Optional[s
     )
 
 
-def make_aiohttp_session(proxy: Optional['ProxySettings'], headers=None, timeout=None):
+def _make_aiohttp_session(proxy: Optional['ProxySettings'], headers=None, timeout=None):
     if headers is None:
         headers = {'User-Agent': 'Electrum-GRS'}
     if timeout is None:
@@ -1339,6 +1341,23 @@ def make_aiohttp_session(proxy: Optional['ProxySettings'], headers=None, timeout
         connector = aiohttp.TCPConnector(ssl=ssl_context)
 
     return aiohttp.ClientSession(headers=headers, timeout=timeout, connector=connector)
+
+
+@contextlib.asynccontextmanager
+async def make_aiohttp_session(proxy: Optional['ProxySettings'], headers=None, timeout=None):
+    """
+    Caller should typically handle at least:
+    - aiohttp.ClientError
+    - asyncio.TimeoutError
+    """
+    try:
+        async with _make_aiohttp_session(proxy, headers=headers, timeout=timeout) as session:
+            yield session
+    except (ProxyConnectionError, ProxyTimeoutError, ProxyError) as e:
+        # We unify all proxy-related exceptions to a single type.
+        # Maybe it would be better to unify to ProxyError, but ~all call sites already expect aiohttp.ClientError,
+        # and that is a generic http-related error that we usually display the str() of, so let's just reuse that.
+        raise aiohttp.ClientError(f"proxy error: {repr(e)}") from e
 
 
 class OldTaskGroup(aiorpcx.TaskGroup):
@@ -1981,6 +2000,8 @@ class CallbackManager(Logger):
                 self._wcallbacks[event].add(wcb)
 
     def unregister_callback(self, cb: Callable) -> None:
+        # FIXME if trigger_callback() was just called for this cb, it could race so that
+        #       the cb gets code exec *after* unregister_callback() returns.
         wcb = self._wcb_from_any_callback(cb)
         with self.callback_lock:
             # note: ^ callback_lock needs to be re-entrant, as we can now trigger __del__, which also takes the lock

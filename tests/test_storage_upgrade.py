@@ -14,7 +14,7 @@ from electrum_grs import util
 from electrum_grs.plugin import Plugins
 from electrum_grs.simple_config import SimpleConfig
 
-from . import as_testnet
+from . import as_testnet, as_regtest
 from .test_wallet import WalletTestCase
 
 
@@ -312,11 +312,22 @@ class TestStorageUpgrade(WalletTestCase):
         wallet_str = self._get_wallet_str()
         await self._upgrade_storage(wallet_str)
 
+    async def test_upgrade_from_client_4_0_1_with_invoices(self):
+        # wallet with one invoice and one request. seed_version is 31
+        wallet_str = self._get_wallet_str()
+        await self._upgrade_storage(wallet_str)
+
     @as_testnet
     async def test_upgrade_from_client_4_5_2_9dk_with_ln(self):
         # This is a realistic testnet wallet, from the "9dk" seed, including some lightning sends/receives,
         # some labels, frozen addresses, saved local txs, invoices/requests, etc. The file also has partial writes.
         # Also, regression test for #8913
+        wallet_str = self._get_wallet_str()
+        await self._upgrade_storage(wallet_str)
+
+    @as_regtest
+    async def test_upgrade_from_client_4_6_0_with_unfulfilled_htlcs(self):
+        # tests unfulfilled_htlcs conversion in 62->63. seed_version is 60.
         wallet_str = self._get_wallet_str()
         await self._upgrade_storage(wallet_str)
 

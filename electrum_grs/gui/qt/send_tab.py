@@ -493,6 +493,10 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
     def on_resolve_done(self, pi: 'PaymentIdentifier'):
         # TODO: resolve can happen while typing, we don't want message dialogs to pop up
         # currently we don't set error for emaillike recipients to avoid just that
+        if pi != self.payto_e.payment_identifier:
+            self.logger.debug(f"stale resolve done")
+            return
+
         self.logger.debug('payment identifier resolve done')
         self.spinner.setVisible(False)
         if pi.error:
@@ -809,7 +813,6 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
                 success, msg = result
                 if success:
                     parent.show_message(_('Payment sent.') + '\n' + msg)
-                    self.invoice_list.update()
                     self.wallet.set_broadcasting(tx, broadcasting_status=PR_BROADCAST)
                 else:
                     msg = msg or ''
