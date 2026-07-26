@@ -62,7 +62,7 @@ def key_path(path: Sequence[_FLEX_KEY], key: _FLEX_KEY) -> str:
             return str(int(x))
         else:
             assert isinstance(x, str), f"unexpected key type for: {x!r}"
-            return x
+            return jsonpointer.escape(x)  # RFC 6901: escape '~' and '/'
     items = [to_str(x) for x in path]
     if key is not None:
         items.append(to_str(key))
@@ -126,6 +126,7 @@ class JsonDB(Logger):
                 data, patches = r, []
             elif r := self.maybe_load_incomplete_data(s):
                 data, patches = r, []
+                self.set_modified(True)
             else:
                 raise WalletFileException("Cannot read wallet file. (parsing failed)")
         if not isinstance(data, dict):
@@ -170,7 +171,7 @@ class JsonDB(Logger):
             if n == 0:
                 s = s[0:i]
                 assert s[-2:] == ',\n'
-                self.logger.info('found incomplete data {s[i:]}')
+                self.logger.info('found incomplete data')
                 return self.load_data(s[0:-2])
 
     def set_modified(self, b):
