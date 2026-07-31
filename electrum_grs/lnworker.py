@@ -2093,14 +2093,6 @@ class LNWallet(Logger):
         or OnionRoutingFailure (if forwarding trampoline).
         """
         if htlc_log.success:
-            if self.network.path_finder:
-                # TODO: report every route to liquidity hints for mpp
-                # in the case of success, we report channels of the
-                # route as being able to send the same amount in the future,
-                # as we assume to not know the capacity
-                self.network.path_finder.update_liquidity_hints(htlc_log.route, htlc_log.amount_msat)
-                # remove inflight htlcs from liquidity hints
-                self.network.path_finder.update_inflight_htlcs(htlc_log.route, add_htlcs=False)
             raise PaymentSuccess()
         # htlc failed
         # if we get a tmp channel failure, it might work to split the amount and try more routes
@@ -2130,7 +2122,7 @@ class LNWallet(Logger):
                 failure_msg=failure_msg)
         else:
             self.handle_error_code_from_failed_htlc(
-                route=route, sender_idx=sender_idx, failure_msg=failure_msg, amount=htlc_log.amount_msat)
+                route=route, sender_idx=sender_idx, failure_msg=failure_msg, amount_msat=htlc_log.amount_msat)
 
     async def pay_to_route(
             self, *,
@@ -2168,8 +2160,8 @@ class LNWallet(Logger):
             self.logger.info(f'adding active forwarding {fw_payment_key}')
             self.active_forwardings[fw_payment_key].append(htlc_key)
         if self.network.path_finder:
-            # add inflight htlcs to liquidity hints
-            self.network.path_finder.update_inflight_htlcs(shi.route, add_htlcs=True)
+            # add inflight htlcs to liquidity hints; removed again in htlc_fulfilled/htlc_failed
+            self.network.path_finder.update_num_inflight_htlcs(shi.route, add_htlcs=True)
         util.trigger_callback('htlc_added', chan, htlc, SENT)
 
     def handle_error_code_from_failed_htlc(
@@ -2178,13 +2170,11 @@ class LNWallet(Logger):
             route: LNPaymentRoute,
             sender_idx: int,
             failure_msg: OnionRoutingFailure,
-            amount: int) -> None:
+            amount_msat: int,
+    ) -> None:
 
         assert self.channel_db  # cannot be in trampoline mode
         assert self.network.path_finder
-
-        # remove inflight htlcs from liquidity hints
-        self.network.path_finder.update_inflight_htlcs(route, add_htlcs=False)
 
         code, data = failure_msg.code, failure_msg.data
         # TODO can we use lnmsg.OnionWireSerializer here?
@@ -2204,13 +2194,18 @@ class LNWallet(Logger):
             raise PaymentFailure(f'payment destination reported error: {failure_msg.code_name()}') from None
 
         # TODO: handle unknown next peer?
-        # handle failure codes that include a channel update
+        # handle failure codes that may include a channel update
         if code in failure_codes:
             offset = failure_codes[code]
             channel_update_len = int.from_bytes(data[offset:offset+2], byteorder="big")
             channel_update_as_received = data[offset+2: offset+2+channel_update_len]
-            payload = self._decode_channel_update_msg(channel_update_as_received)
-            if payload is None:
+            if channel_update_len == 0:
+                # the channel_update became optional
+                # https://github.com/lightning/bolts/blob/93b7ee031b50acd59967a105f1326176a37628f9/04-onion-routing.md?plain=1#L1384-L1389
+                # without an update we cannot correct our local policy for the channel, so we avoid (blacklist) it,
+                # except for liquidity failures, where the liquidity hint suffices to retry
+                blacklist = code != OnionFailureCode.TEMPORARY_CHANNEL_FAILURE
+            elif (payload := self._decode_channel_update_msg(channel_update_as_received)) is None:
                 self.logger.info(f'could not decode channel_update for failed htlc: '
                                  f'{channel_update_as_received.hex()}')
                 blacklist = True
@@ -2219,19 +2214,17 @@ class LNWallet(Logger):
                 blacklist = True
             else:
                 # apply the channel update or get blacklisted
-                blacklist, update = self._handle_chanupd_from_failed_htlc(
+                blacklist, handled = self._handle_chanupd_from_failed_htlc(
                     payload, route=route, sender_idx=sender_idx, failure_msg=failure_msg)
-                # we interpret a temporary channel failure as a liquidity issue
-                # in the channel and update our liquidity hints accordingly
-                if code == OnionFailureCode.TEMPORARY_CHANNEL_FAILURE:
-                    self.network.path_finder.update_liquidity_hints(
-                        route,
-                        amount,
-                        failing_channel=ShortChannelID(failing_channel))
-                # if we can't decide on some action, we are stuck
-                if not (blacklist or update):
-                    raise PaymentFailure(failure_msg.code_name())
-        # for errors that do not include a channel update
+                assert blacklist or handled, "some action has to be taken on a failure with channel update"
+            # we interpret a temporary channel failure as a liquidity issue
+            # in the channel and update our liquidity hints accordingly
+            if code == OnionFailureCode.TEMPORARY_CHANNEL_FAILURE:
+                self.network.path_finder.update_liquidity_hints(
+                    route,
+                    amount_msat,
+                    failing_channel=ShortChannelID(failing_channel))
+        # for errors that never include a channel update
         else:
             blacklist = True
         if blacklist:
@@ -2244,7 +2237,7 @@ class LNWallet(Logger):
         failure_msg: OnionRoutingFailure,
     ) -> Tuple[bool, bool]:
         blacklist = False
-        update = False
+        handled = False
         try:
             r = self.channel_db.add_channel_update(payload, verify=True)
         except InvalidGossipMsg:
@@ -2257,7 +2250,7 @@ class LNWallet(Logger):
             for chan in self.channels.values():
                 if chan.short_channel_id == short_channel_id:
                     chan.set_remote_update(payload)
-            update = True
+            handled = True
         elif r == UpdateStatus.ORPHANED:
             # maybe it is a private channel (and data in invoice was outdated)
             self.logger.info(f"Could not find {short_channel_id}. maybe update is for private channel?")
@@ -2267,16 +2260,23 @@ class LNWallet(Logger):
                 # eclair sends CHANNEL_DISABLED if its peer is offline. E.g. we might be trying to pay
                 # a mobile phone with the app closed. So we cache this with a short TTL.
                 cache_ttl = self.channel_db.PRIVATE_CHAN_UPD_CACHE_TTL_SHORT
-            update = self.channel_db.add_channel_update_for_private_channel(payload, start_node_id, cache_ttl=cache_ttl)
-            blacklist = not update
+            handled = self.channel_db.add_channel_update_for_private_channel(payload, start_node_id, cache_ttl=cache_ttl)
+            blacklist = not handled
         elif r == UpdateStatus.EXPIRED:
             blacklist = True
         elif r == UpdateStatus.DEPRECATED:
             self.logger.info(f'channel update is not more recent.')
             blacklist = True
         elif r == UpdateStatus.UNCHANGED:
-            blacklist = True
-        return blacklist, update
+            if failure_msg.code == OnionFailureCode.TEMPORARY_CHANNEL_FAILURE:
+                # the sent htlc might have exceeded the channel's liquidity, no need to blacklist,
+                # we record liquidity hints and can attempt again with a smaller htlc
+                handled = True
+            else:
+                blacklist = True
+        else:
+            raise Exception(f"unexpected chan upd UpdateStatus: {r}")
+        return blacklist, handled
 
     @classmethod
     def _decode_channel_update_msg(cls, chan_upd_msg: bytes) -> Optional[Dict[str, Any]]:
@@ -2421,7 +2421,6 @@ class LNWallet(Logger):
             receiver_pubkey=paysession.invoice_pubkey,
         )
         for sc in split_configurations:
-            is_multichan_mpp = len(sc.config.items()) > 1
             is_mpp = sc.config.number_parts() > 1
             if is_mpp and not paysession.invoice_features.supports(LnFeatures.BASIC_MPP_OPT):
                 continue
@@ -2520,12 +2519,12 @@ class LNWallet(Logger):
                                     invoice_pubkey=paysession.invoice_pubkey,
                                     r_tags=paysession.r_tags,
                                     invoice_features=paysession.invoice_features,
-                                    my_sending_channels=[channel] if is_multichan_mpp else my_active_channels,
+                                    my_sending_channels=[channel] if is_mpp else my_active_channels,
                                     full_path=full_path,
                                 ))
                             if not is_route_within_budget(
-                                    route, budget=budget,
-                                    amount_msat_for_dest=amount_msat,
+                                    route, budget=budget._replace(fee_msat=budget.fee_msat // sc.config.number_parts()),
+                                    amount_msat_for_dest=part_amount_msat,
                                     cltv_delta_for_dest=paysession.min_final_cltv_delta):
                                 self.logger.info(f"rejecting route (exceeds budget): {route=}. {budget=}")
                                 raise FeeBudgetExceeded()
@@ -3168,6 +3167,9 @@ class LNWallet(Logger):
         shi = self.sent_htlcs_info.get((payment_hash, chan.short_channel_id, htlc_id))
         if shi and htlc_id in chan.onion_keys:
             chan.pop_onion_key(htlc_id)
+            if self.network.path_finder:
+                self.network.path_finder.update_liquidity_hints(shi.route, shi.amount_receiver_msat)
+                self.network.path_finder.update_num_inflight_htlcs(shi.route, add_htlcs=False)
             payment_key = payment_hash + shi.payment_secret_orig
             paysession = self._paysessions[payment_key]
             q = paysession.sent_htlcs_q
@@ -3214,6 +3216,8 @@ class LNWallet(Logger):
         shi = self.sent_htlcs_info.get((payment_hash, chan.short_channel_id, htlc_id))
         if shi and htlc_id in chan.onion_keys:
             onion_key = chan.pop_onion_key(htlc_id)
+            if self.network.path_finder:
+                self.network.path_finder.update_num_inflight_htlcs(shi.route, add_htlcs=False)
             payment_okey = payment_hash + shi.payment_secret_orig
             paysession = self._paysessions[payment_okey]
             q = paysession.sent_htlcs_q

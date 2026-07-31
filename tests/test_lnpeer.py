@@ -3,7 +3,6 @@ import dataclasses
 import shutil
 import copy
 import tempfile
-from decimal import Decimal
 import os
 from contextlib import contextmanager
 from collections import defaultdict
@@ -29,8 +28,8 @@ from electrum_grs import constants
 from electrum_grs import bip32
 from electrum_grs.network import Network, ProxySettings
 from electrum_grs import simple_config, lnutil
-from electrum_grs.bolt11 import encode_bolt11_invoice, BOLT11Addr, decode_bolt11_invoice
-from electrum_grs.bitcoin import COIN, sha256
+from electrum_grs.bolt11 import encode_bolt11_invoice, BOLT11Addr
+from electrum_grs.bitcoin import sha256
 from electrum_grs.transaction import Transaction
 from electrum_grs.util import NetworkRetryManager, bfh, OldTaskGroup, EventListener, InvoiceError
 from electrum_grs.lnpeer import Peer
@@ -44,134 +43,17 @@ from electrum_grs.lnworker import LNWallet, NoPathFound, SentHtlcInfo, PaySessio
 from electrum_grs.lnmsg import encode_msg, decode_msg
 from electrum_grs import lnmsg
 from electrum_grs.logging import console_stderr_handler, Logger
-from electrum_grs.lnworker import PaymentInfo
 from electrum_grs.lnonion import OnionFailureCode, OnionRoutingFailure, OnionHopsDataSingle, OnionPacket
 from electrum_grs.lnutil import LOCAL, REMOTE, UpdateAddHtlc, RecvMPPResolution, RevocationStore
-from electrum_grs.invoices import PR_PAID, PR_UNPAID, Invoice, LN_EXPIRY_NEVER
+from electrum_grs.invoices import PR_PAID, PR_UNPAID, Invoice
 from electrum_grs.interface import GracefulDisconnect
-from electrum_grs.simple_config import SimpleConfig
 from electrum_grs.fee_policy import FeeTimeEstimates, FEE_ETA_TARGETS
 from electrum_grs.mpp_split import split_amount_normal
 from electrum_grs.wallet import Abstract_Wallet, Standard_Wallet
 
 from .test_bitcoin import needs_test_with_all_chacha20_implementations
 from . import ElectrumTestCase, restore_wallet_from_text__for_unittest, lnhelpers
-from .lnhelpers import Graph, MockLNWallet, create_test_channels
-
-
-high_fee_channel = {
-   'local_balance_msat': 10 * bitcoin.COIN * 1000 // 2,
-   'remote_balance_msat': 10 * bitcoin.COIN * 1000 // 2,
-   'local_base_fee_msat': 500_000,
-   'local_fee_rate_millionths': 500,
-   'remote_base_fee_msat': 500_000,
-   'remote_fee_rate_millionths': 500,
-}
-
-low_fee_channel = {
-    'local_balance_msat': 10 * bitcoin.COIN * 1000 // 2,
-    'remote_balance_msat': 10 * bitcoin.COIN * 1000 // 2,
-    'local_base_fee_msat': 1_000,
-    'local_fee_rate_millionths': 1,
-    'remote_base_fee_msat': 1_000,
-    'remote_fee_rate_millionths': 1,
-}
-
-depleted_channel = {
-    'local_balance_msat': 330 * 1000, # local pays anchors
-    'remote_balance_msat': 10 * bitcoin.COIN * 1000,
-    'local_base_fee_msat': 1_000,
-    'local_fee_rate_millionths': 1,
-    'remote_base_fee_msat': 1_000,
-    'remote_fee_rate_millionths': 1,
-}
-
-_GRAPH_DEFINITIONS = {
-    # A -- B
-    'single_chan' : {
-        'alice': {
-            'channels': {
-                'bob': [
-                    {
-                       'local_balance_msat': 10 * bitcoin.COIN * 1000 // 2,
-                       'remote_balance_msat': 10 * bitcoin.COIN * 1000 // 2,
-                    },
-                ],
-            },
-        },
-        'bob': {
-        },
-    },
-    #                A
-    #     high fee /   \ low fee
-    #             B     C
-    #     high fee \   / low fee
-    #                D
-    'square_graph': {
-        'alice': {
-            'channels': {
-                # we should use copies of channel definitions if
-                # we want to independently alter them in a test
-                'bob': [high_fee_channel.copy()],
-                'carol': [low_fee_channel.copy()],
-            },
-        },
-        'bob': {
-            'channels': {
-                'dave': [high_fee_channel.copy()],
-            },
-            'config': {
-                SimpleConfig.EXPERIMENTAL_LN_FORWARD_PAYMENTS: True,
-                SimpleConfig.EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS: True,
-            },
-        },
-        'carol': {
-            'channels': {
-                'dave': [low_fee_channel.copy()],
-            },
-            'config': {
-                SimpleConfig.EXPERIMENTAL_LN_FORWARD_PAYMENTS: True,
-                SimpleConfig.EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS: True,
-            },
-        },
-        'dave': {
-        },
-    },
-    # A -- B -- C -- D -- E
-    'line_graph': {
-        'alice': {
-            'channels': {
-                'bob': [low_fee_channel.copy()],
-            },
-        },
-        'bob': {  # Trampoline Forwarder
-            'channels': {
-                'carol': [low_fee_channel.copy()],
-            },
-            'config': {
-                SimpleConfig.EXPERIMENTAL_LN_FORWARD_PAYMENTS: True,
-            },
-        },
-        'carol': {
-            'channels': {
-                'dave': [low_fee_channel.copy()],
-            },
-            'config': {
-                SimpleConfig.EXPERIMENTAL_LN_FORWARD_PAYMENTS: True,
-            },
-        },
-        'dave': {  # Trampoline Forwarder
-            'channels': {
-                'edward': [low_fee_channel.copy()],
-            },
-            'config': {
-                SimpleConfig.EXPERIMENTAL_LN_FORWARD_PAYMENTS: True,
-            },
-        },
-        'edward': {
-        },
-    },
-}
+from .lnhelpers import Graph, MockLNWallet, create_test_channels, low_fee_channel, depleted_channel
 
 
 class PaymentDone(Exception): pass
@@ -210,68 +92,13 @@ class TestPeer(ElectrumTestCase):
 
     def setUp(self):
         super().setUp()
-        self.GRAPH_DEFINITIONS = copy.deepcopy(_GRAPH_DEFINITIONS)
+        self.GRAPH_DEFINITIONS = copy.deepcopy(lnhelpers._GRAPH_DEFINITIONS)
 
     async def asyncTearDown(self):
         electrum_grs.trampoline._TRAMPOLINE_NODES_UNITTESTS = {}
         await super().asyncTearDown()
 
-    @staticmethod
-    def prepare_invoice(
-            w2: MockLNWallet,  # receiver
-            *,
-            amount_msat=100_000_000,
-            include_routing_hints=False,
-            payment_preimage: bytes = None,
-            payment_hash: bytes = None,
-            invoice_features: LnFeatures = None,
-            min_final_cltv_delta: int = None,
-            expiry: int = None,
-    ) -> Tuple[BOLT11Addr, Invoice]:
-        amount_btc = amount_msat/Decimal(COIN*1000)
-        if payment_preimage is None and not payment_hash:
-            payment_preimage = os.urandom(32)
-        if payment_hash is None:
-            payment_hash = sha256(payment_preimage)
-        if payment_preimage:
-            w2.save_preimage(payment_hash, payment_preimage)
-        if include_routing_hints:
-            routing_hints = w2.calc_routing_hints_for_invoice(amount_msat)
-        else:
-            routing_hints = []
-            trampoline_hints = []
-        if invoice_features is None:
-            invoice_features = w2.features.for_bolt11_invoice()
-        if invoice_features.supports(LnFeatures.PAYMENT_SECRET_OPT):
-            payment_secret = w2.get_payment_secret(payment_hash)
-        else:
-            payment_secret = None
-        if min_final_cltv_delta is None:
-            min_final_cltv_delta = lnutil.MIN_FINAL_CLTV_DELTA_ACCEPTED
-        info = PaymentInfo(
-            payment_hash=payment_hash,
-            amount_msat=amount_msat,
-            direction=RECEIVED,
-            status=PR_UNPAID,
-            min_final_cltv_delta=min_final_cltv_delta,
-            expiry_delay=expiry or LN_EXPIRY_NEVER,
-            invoice_features=invoice_features,
-        )
-        w2.save_payment_info(info)
-        lnaddr1 = BOLT11Addr(
-            paymenthash=payment_hash,
-            amount=amount_btc,
-            tags=[
-                ('c', min_final_cltv_delta),
-                ('d', 'coffee'),
-                ('9', invoice_features),
-                ('x', expiry or 3600),
-            ] + routing_hints,
-            payment_secret=payment_secret,
-        )
-        invoice = encode_bolt11_invoice(lnaddr1, w2.node_keypair.privkey)
-        lnaddr2 = decode_bolt11_invoice(invoice)  # unlike lnaddr1, this now has a pubkey set
-        return lnaddr2, Invoice.from_bech32(invoice)
+    prepare_invoice = staticmethod(lnhelpers.prepare_invoice)
 
     async def _activate_trampoline(self, w: MockLNWallet):
         if w.network.channel_db:
@@ -2250,6 +2077,23 @@ class TestPeerForwarding(TestPeer):
         with self.assertRaises(PaymentDone):
             await f()
 
+    async def _assert_no_inflight_htlcs_in_liquidity_hints(self, w: MockLNWallet):
+        # pay_invoice returns when the first htlc resolution is processed; the remaining
+        # parts resolve later. only when all parts have resolved is the paysession removed.
+        async def wait_for_paysessions_to_be_cleaned_up():
+            while w._paysessions:
+                await asyncio.sleep(0.01)
+        await util.wait_for2(wait_for_paysessions_to_be_cleaned_up(), timeout=10)
+        for hint in w.network.path_finder.liquidity_hints._liquidity_hints.values():
+            self.assertEqual(0, hint.num_inflight_htlcs(True))
+            self.assertEqual(0, hint.num_inflight_htlcs(False))
+
+    def _assert_all_parts_reported_can_send(self, w: MockLNWallet):
+        # every part of the mpp resolved successfully, so every edge an htlc was
+        # sent over should have received a can_send report for its direction of use
+        for hint in w.network.path_finder.liquidity_hints._liquidity_hints.values():
+            self.assertTrue(hint.can_send(True) is not None or hint.can_send(False) is not None)
+
     async def _run_mpp(self, graph, kwargs):
         """Tests a multipart payment scenario for failing and successful cases."""
         self.assertEqual(500_000_000_000, graph.channels[('alice', 'bob')][0].balance(LOCAL))
@@ -2299,8 +2143,11 @@ class TestPeerForwarding(TestPeer):
                         await g.spawn(peer.wait_one_htlc_switch_iteration())
                 for peer in peers:
                     self.assertEqual(len(peer.lnworker.received_mpp_htlcs), 0)
+                await self._assert_no_inflight_htlcs_in_liquidity_hints(alice_w)
+                self._assert_all_parts_reported_can_send(alice_w)
                 raise PaymentDone()
             elif len(log) == 1 and log[0].failure_msg.code == OnionFailureCode.MPP_TIMEOUT:
+                await self._assert_no_inflight_htlcs_in_liquidity_hints(alice_w)
                 raise PaymentTimeout()
             else:
                 raise NoPathFound()
@@ -2332,6 +2179,42 @@ class TestPeerForwarding(TestPeer):
         graph = self.prepare_chans_and_peers_in_graph(self.GRAPH_DEFINITIONS['square_graph'])
         with self.assertRaises(NoPathFound):
             await self._run_mpp(graph, {'mpp_invoice': False})
+
+    async def test_payment_multipart_fee_budget(self):
+        """The fee budget must be shared between the parts of an MPP payment: each part
+        is checked with its part amount against its share of the budget, so that the
+        aggregate fee over all parts cannot exceed the budget."""
+        graph_def = self.GRAPH_DEFINITIONS['square_graph']
+        # use base-fee-dominated routing fees, so each part pays the full base fee
+        # and the aggregate fee doubles when the payment is split into two parts
+        base_fee_msat = 1_000_000
+        for node in ('bob', 'carol'):
+            graph_def[node]['channels']['dave'][0].update({'local_base_fee_msat': base_fee_msat, 'local_fee_rate_millionths': 0})
+        graph = self.prepare_chans_and_peers_in_graph(graph_def)
+        amount_to_pay = 600_000_000_000  # exceeds single channel capacity
+        alice_w, dave_w = graph.workers['alice'], graph.workers['dave']
+        dave_w.features |= LnFeatures.BASIC_MPP_OPT
+        self.assertFalse(alice_w.uses_trampoline())
+        peers = graph.peers.values()
+        async def pay(fee_budget_msat: int) -> bool:
+            lnaddr, pay_req = self.prepare_invoice(dave_w, include_routing_hints=True, amount_msat=amount_to_pay)
+            budget = PaymentFeeBudget.from_invoice_amount(invoice_amount_msat=amount_to_pay, config=alice_w.config, max_fee_msat=fee_budget_msat)
+            result, log = await alice_w.pay_invoice(pay_req, attempts=1, budget=budget)
+            return result
+        async def f():
+            async with OldTaskGroup() as group:
+                for peer in peers:
+                    await group.spawn(peer._message_loop())
+                    await group.spawn(peer.htlc_switch())
+                for peer in peers:
+                    await peer.initialized
+                # a budget covering one part's base fee but not both must fail the payment
+                self.assertFalse(await pay(fee_budget_msat=base_fee_msat * 3 // 2))
+                # a budget covering the base fee of both parts must succeed
+                self.assertTrue(await pay(fee_budget_msat=base_fee_msat * 2))
+                raise PaymentDone()
+        with self.assertRaises(PaymentDone):
+            await f()
 
     async def test_payment_multipart_trampoline_e2e(self):
         graph = self.prepare_chans_and_peers_in_graph(self.GRAPH_DEFINITIONS['square_graph'])

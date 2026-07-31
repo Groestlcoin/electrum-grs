@@ -1,6 +1,7 @@
 import random
 import unittest
 from math import inf
+from unittest import mock
 from typing import Optional
 from os import urandom
 
@@ -18,7 +19,8 @@ from electrum_grs import bitcoin, lnrouter
 from electrum_grs.constants import BitcoinTestnet
 from electrum_grs.simple_config import SimpleConfig
 from electrum_grs.lnrouter import (PathEdge, LiquidityHintMgr, DEFAULT_PENALTY_PROPORTIONAL_MILLIONTH,
-                               DEFAULT_PENALTY_BASE_MSAT, fee_for_edge_msat, LNPaymentTRoute, TrampolineEdge)
+                               DEFAULT_PENALTY_BASE_MSAT, fee_for_edge_msat, LNPaymentTRoute, TrampolineEdge,
+                               HINT_DURATION)
 
 from . import ElectrumTestCase
 from .test_bitcoin import needs_test_with_all_chacha20_implementations
@@ -247,7 +249,7 @@ class Test_LNRouter(ElectrumTestCase):
         A -6-> D -4-> C -1-> B -2-> E
         A -3-> B -1-> C -4-> D -5-> E
         """
-        self.path_finder.liquidity_hints.update_cannot_send(node('b'), node('e'), channel(2), amount_to_send - 1)
+        self.path_finder.liquidity_hints.update_cannot_send(node('b'), node('e'), channel(2), amount_msat=amount_to_send - 1)
         path = self.path_finder.find_path_for_payment(
             nodeA=node('a'),
             nodeB=node('e'),
@@ -264,7 +266,7 @@ class Test_LNRouter(ElectrumTestCase):
         A -6-> D -4-> C -1-> B |-2-> E
         A -3-> B -1-> C -4-> D |-5-> E
         """
-        self.path_finder.liquidity_hints.update_cannot_send(node('d'), node('e'), channel(5), amount_to_send - 1)
+        self.path_finder.liquidity_hints.update_cannot_send(node('d'), node('e'), channel(5), amount_msat=amount_to_send - 1)
         path = self.path_finder.find_path_for_payment(
             nodeA=node('a'),
             nodeB=node('e'),
@@ -282,7 +284,7 @@ class Test_LNRouter(ElectrumTestCase):
         A -6-> D -4-> C -1-> B |-2-> E
         A -3-> B -1-> C -4-> D |-5-> E
         """
-        self.path_finder.liquidity_hints.update_can_send(node('d'), node('c'), channel(4), amount_to_send + 1000)
+        self.path_finder.liquidity_hints.update_can_send(node('d'), node('c'), channel(4), amount_msat=amount_to_send + 1000)
         path = self.path_finder.find_path_for_payment(
             nodeA=node('a'),
             nodeB=node('e'),
@@ -339,10 +341,10 @@ class Test_LNRouter(ElectrumTestCase):
         # check default penalty
         self.assertEqual(
             fee_for_edge_msat(amount_to_send, DEFAULT_PENALTY_BASE_MSAT, DEFAULT_PENALTY_PROPORTIONAL_MILLIONTH),
-            liquidity_hints.penalty(node_from, node_to, channel_id, amount_to_send)
+            liquidity_hints.penalty(node_from, node_to, channel_id, amount_msat=amount_to_send)
         )
-        liquidity_hints.update_can_send(node_from, node_to, channel_id, 1_000_000)
-        liquidity_hints.update_cannot_send(node_from, node_to, channel_id, 2_000_000)
+        liquidity_hints.update_can_send(node_from, node_to, channel_id, amount_msat=1_000_000)
+        liquidity_hints.update_cannot_send(node_from, node_to, channel_id, amount_msat=2_000_000)
         hint = liquidity_hints.get_hint(channel_id)
         self.assertEqual(1_000_000, hint.can_send(node_from < node_to))
         self.assertEqual(None, hint.cannot_send(node_to < node_from))
@@ -351,17 +353,17 @@ class Test_LNRouter(ElectrumTestCase):
         self.assertEqual(2_000_000, hint.can_send(node_to < node_from))
 
         # check penalties
-        self.assertEqual(0., liquidity_hints.penalty(node_from, node_to, channel_id, 1_000_000))
-        self.assertEqual(650, liquidity_hints.penalty(node_from, node_to, channel_id, 1_500_000))
-        self.assertEqual(inf, liquidity_hints.penalty(node_from, node_to, channel_id, 2_000_000))
+        self.assertEqual(0., liquidity_hints.penalty(node_from, node_to, channel_id, amount_msat=1_000_000))
+        self.assertEqual(650, liquidity_hints.penalty(node_from, node_to, channel_id, amount_msat=1_500_000))
+        self.assertEqual(inf, liquidity_hints.penalty(node_from, node_to, channel_id, amount_msat=2_000_000))
 
         # test that we don't overwrite significant info with less significant info
-        liquidity_hints.update_can_send(node_from, node_to, channel_id, 500_000)
+        liquidity_hints.update_can_send(node_from, node_to, channel_id, amount_msat=500_000)
         hint = liquidity_hints.get_hint(channel_id)
         self.assertEqual(1_000_000, hint.can_send(node_from < node_to))
 
         # test case when can_send > cannot_send
-        liquidity_hints.update_can_send(node_from, node_to, channel_id, 3_000_000)
+        liquidity_hints.update_can_send(node_from, node_to, channel_id, amount_msat=3_000_000)
         hint = liquidity_hints.get_hint(channel_id)
         self.assertEqual(3_000_000, hint.can_send(node_from < node_to))
         self.assertEqual(None, hint.cannot_send(node_from < node_to))
@@ -371,7 +373,42 @@ class Test_LNRouter(ElectrumTestCase):
         liquidity_hints.add_htlc(node_from, node_to, channel_id)
         liquidity_hints.get_hint(channel_id)
         # we have got 600 (attempt) + 600 (inflight) penalty
-        self.assertEqual(1200, liquidity_hints.penalty(node_from, node_to, channel_id, 1_000_000))
+        self.assertEqual(1200, liquidity_hints.penalty(node_from, node_to, channel_id, amount_msat=1_000_000))
+
+    def test_liquidity_hints_expiry(self):
+        liquidity_hints = LiquidityHintMgr()
+        node_from = bytes(0)
+        node_to = bytes(1)
+        channel_id = ShortChannelID.from_components(0, 0, 0)
+        mock_time = 1_000_000
+        with mock.patch.object(lnrouter, 'now', lambda: mock_time):
+            liquidity_hints.update_cannot_send(node_from, node_to, channel_id, amount_msat=1_000_000)
+            self.assertEqual(inf, liquidity_hints.penalty(node_from, node_to, channel_id, amount_msat=1_000_000))
+            # updating can_send after cannot_send expired must not resurrect the old cannot_send
+            mock_time += HINT_DURATION + 1
+            liquidity_hints.update_can_send(node_from, node_to, channel_id, amount_msat=10_000)
+            hint = liquidity_hints.get_hint(channel_id)
+            self.assertEqual(10_000, hint.can_send(node_from < node_to))
+            self.assertEqual(None, hint.cannot_send(node_from < node_to))
+            self.assertNotEqual(inf, liquidity_hints.penalty(node_from, node_to, channel_id, amount_msat=1_000_000))
+            # an expired higher can_send must not block recording a lower can_send
+            mock_time += HINT_DURATION + 1
+            liquidity_hints.update_can_send(node_from, node_to, channel_id, amount_msat=5_000)
+            hint = liquidity_hints.get_hint(channel_id)
+            self.assertEqual(5_000, hint.can_send(node_from < node_to))
+
+    def test_reset_liquidity_hints_clears_inflight_htlcs(self):
+        liquidity_hints = LiquidityHintMgr()
+        node_from, node_to = bytes(0), bytes(1)
+        channel_id = ShortChannelID.from_components(0, 0, 0)
+        liquidity_hints.add_htlc(node_from, node_to, channel_id)
+        liquidity_hints.add_htlc(node_to, node_from, channel_id)
+        hint = liquidity_hints.get_hint(channel_id)
+        self.assertEqual(1, hint.num_inflight_htlcs(node_from < node_to))
+        self.assertEqual(1, hint.num_inflight_htlcs(node_to < node_from))
+        liquidity_hints.reset_liquidity_hints()
+        self.assertEqual(0, hint.num_inflight_htlcs(node_from < node_to))
+        self.assertEqual(0, hint.num_inflight_htlcs(node_to < node_from))
 
     @needs_test_with_all_chacha20_implementations
     def test_new_onion_packet(self):
