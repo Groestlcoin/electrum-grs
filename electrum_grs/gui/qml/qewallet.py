@@ -14,7 +14,8 @@ from electrum_grs.logging import get_logger
 from electrum_grs.network import TxBroadcastError, BestEffortRequestFailed
 from electrum_grs.transaction import PartialTransaction, Transaction
 from electrum_grs.util import (
-    InvalidPassword, event_listener, AddTransactionException, get_asyncio_loop, NotEnoughFunds, NoDynamicFeeEstimates
+    InvalidPassword, event_listener, AddTransactionException, get_asyncio_loop, NotEnoughFunds, NoDynamicFeeEstimates,
+    UserFacingException,
 )
 from electrum_grs.lnutil import MIN_FUNDING_SAT
 from electrum_grs.plugin import run_hook
@@ -81,6 +82,7 @@ class QEWallet(AuthMixin, QObject, QtEventListener):
     peersUpdated = pyqtSignal()
     seedRetrieved = pyqtSignal()
     messageSigned = pyqtSignal([str], arguments=['signature'])
+    signMessageError = pyqtSignal([str], arguments=['error'])
 
     _network_signal = pyqtSignal(str, object)
 
@@ -846,7 +848,11 @@ class QEWallet(AuthMixin, QObject, QtEventListener):
     @pyqtSlot(str, str)
     @auth_protect(message=_("Sign message?"))
     def signMessage(self, address, message):
-        sig = self.wallet.sign_message(address, message, self.password)
+        try:
+            sig = self.wallet.sign_message(address=address, message=message, password=self.password)
+        except UserFacingException as e:
+            self.signMessageError.emit(str(e))
+            return
         result = base64.b64encode(sig).decode('ascii')
         self.messageSigned.emit(result)
 
