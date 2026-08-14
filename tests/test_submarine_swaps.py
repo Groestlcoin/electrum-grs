@@ -5,21 +5,21 @@ from unittest import mock
 
 from electrum_ecc import ECPrivkey
 
-from electrum import util, bitcoin
-from electrum.address_synchronizer import TX_HEIGHT_LOCAL
-from electrum.bitcoin import COIN, DUST_LIMIT_P2WSH
-from electrum.util import bfh, now, wait_for2
-from electrum.crypto import sha256
-from electrum.interface import PaddedRSTransport
-from electrum.lnonion import OnionRoutingFailure
-from electrum.simple_config import SimpleConfig
-from electrum.submarine_swaps import (
+from electrum_grs import util, bitcoin
+from electrum_grs.address_synchronizer import TX_HEIGHT_LOCAL
+from electrum_grs.bitcoin import COIN, DUST_LIMIT_P2WSH
+from electrum_grs.util import bfh, now, wait_for2
+from electrum_grs.crypto import sha256
+from electrum_grs.interface import PaddedRSTransport
+from electrum_grs.lnonion import OnionRoutingFailure
+from electrum_grs.simple_config import SimpleConfig
+from electrum_grs.submarine_swaps import (
     SwapManager, SwapData, SwapServerTransport, LOCKTIME_DELTA_REFUND,
     MIN_LOCKTIME_DELTA_FOR_CLAIM, SPENDER_FINALITY_DELAY, _construct_swap_scriptcode)
-from electrum.transaction import (
+from electrum_grs.transaction import (
     PartialTransaction, PartialTxOutput, Transaction, TxOutput, TxOutpoint)
-from electrum.txbatcher import TxBatcher
-from electrum.wallet import Abstract_Wallet, Standard_Wallet, Wallet
+from electrum_grs.txbatcher import TxBatcher
+from electrum_grs.wallet import Abstract_Wallet, Standard_Wallet, Wallet
 
 from . import ElectrumTestCase, restore_wallet_from_text__for_unittest
 from .toyserver.toynetwork import ToyNetwork
