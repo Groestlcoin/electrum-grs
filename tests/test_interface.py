@@ -1,21 +1,17 @@
 import asyncio
-from functools import partial
-
-import aiorpcx
 from aiorpcx import RPCError
 
-from electrum_grs.bitcoin import COIN, COINBASE_MATURITY
-from electrum_grs.interface import ServerAddr, Interface, PaddedRSTransport
-from electrum_grs import util, blockchain
-from electrum_grs.util import OldTaskGroup, bfh
+from electrum_grs import util
+from electrum_grs.bitcoin import COIN
+from electrum_grs.interface import ServerAddr, PaddedRSTransport
+from electrum_grs.util import bfh
 from electrum_grs.simple_config import SimpleConfig
 from electrum_grs.transaction import Transaction, TxOutput
 from electrum_grs.wallet import Abstract_Wallet
-from electrum_grs.address_synchronizer import TX_HEIGHT_UNCONFIRMED
-from electrum_grs.blockchain import Blockchain
 
 from . import ElectrumTestCase
 from . import restore_wallet_from_text__for_unittest
+from .toyserver.toynetwork import ToyNetwork
 from .toyserver.toyserver import ToyServer, ToyServerSession
 
 
@@ -64,37 +60,6 @@ class TestServerAddr(ElectrumTestCase):
                          ServerAddr(host="2400:6180:0:d1::86b:e001", port=50001, protocol="t").to_friendly_name())
 
 
-class MockNetwork:
-
-    def __init__(self, *, config: SimpleConfig):
-        self.config = config
-        self.asyncio_loop = util.get_asyncio_loop()
-        self.taskgroup = OldTaskGroup()
-        blockchain.read_blockchains(self.config)
-        blockchain.init_headers_file_for_best_chain()
-        self.proxy = None
-        self.debug = True
-        self.bhi_lock = asyncio.Lock()
-        self.interface = None  # type: Interface | None
-
-    async def connection_down(self, interface: Interface):
-        pass
-    def get_network_timeout_seconds(self, request_type) -> int:
-        return 10
-    def check_interface_against_healthy_spread_of_connected_servers(self, iface_to_check: Interface) -> bool:
-        return True
-    def update_fee_estimates(self, *, fee_est: dict[int, int] = None):
-        pass
-    async def switch_unwanted_fork_interface(self):
-        pass
-    async def switch_lagging_interface(self):
-        pass
-    def blockchain(self) -> Blockchain:
-        return self.interface.blockchain
-    def get_local_height(self) -> int:
-        return self.blockchain().height()
-
-
 class TestInterface(ElectrumTestCase):
     REGTEST = True
 
@@ -113,25 +78,18 @@ class TestInterface(ElectrumTestCase):
         await super().asyncSetUp()
         self._toyserver = ToyServer()
         await self._toyserver.start()
-        self.network = MockNetwork(config=self.config)
+        self.network = ToyNetwork(config=self.config)
         for _ in range(10):  # mine some blocks
             await self._toyserver.mine_block()
         await self._toyserver.set_up_faucet(config=self.config)
 
     async def asyncTearDown(self):
-        if self.network.interface:
-            await self.network.interface.close()
+        await self.network.stop()
         await self._toyserver.stop()
         await super().asyncTearDown()
 
     async def _start_iface_and_wait_for_sync(self):
-        interface = Interface(network=self.network, server=ServerAddr(host="127.0.0.1", port=self._toyserver.server_port, protocol="t"))
-        interface.client_name = lambda: "alice"
-        self.network.interface = interface
-        async with util.async_timeout(5):
-            await interface.ready
-            await interface._blockchain_updated.wait()
-        return interface
+        return await self.network.connect(self._toyserver, client_name="alice")
 
     def _get_server_session(self) -> ToyServerSession:
         return self._toyserver.get_session_by_name("alice")
@@ -202,3 +160,39 @@ class TestInterface(ElectrumTestCase):
             w1.adb.get_address_history(w1_addr),
             {funding_txid: server_blockheight})
 
+    async def test_we_disconnect_on_incoming_request(self):
+        """We don't expect the server to send us any requests of its own."""
+        interface = await self._start_iface_and_wait_for_sync()
+        with self.assertLogs('electrum', level='INFO') as logs:
+            with self.assertRaises(asyncio.CancelledError):
+                await self._get_server_session().send_request('blockchain.block.header', [999])
+        self.assertTrue(any(("Interface.[127.0.0.1:" in msg and "unexpected request. not a notification" in msg)
+                            for msg in logs.output))
+
+    async def test_we_disconnect_on_incoming_notification_spam(self):
+        """We don't expect the server to send us any requests of its own."""
+        interface = await self._start_iface_and_wait_for_sync()
+        # set lower resource limits on client
+        assert interface.session.cost_hard_limit > 0
+        interface.session.cost_hard_limit /= 30
+        interface.session.cost_soft_limit = interface.session.cost_hard_limit - 1
+        interface.session.bw_cost_per_byte *= 10
+        with self.assertLogs('electrum', level='INFO') as logs:
+            # server now sends a crazy number of notifications to the client
+            srv_sess = self._get_server_session()
+            headersub_res = (srv_sess._get_headersub_result(),)
+            spam_count = 200_000
+            for i in range(spam_count):
+                if srv_sess.got_disconnected.is_set():
+                    break
+                await srv_sess.send_notification('blockchain.headers.subscribe', headersub_res)
+            # both parties should close their end of the session (triggered by the client DC-ing)
+            async with util.async_timeout(1):
+                await srv_sess.got_disconnected.wait()
+            async with util.async_timeout(1):
+                await interface.got_disconnected.wait()
+        # the client should not have received most of the spam:
+        assert interface.session.recv_count < spam_count / 20
+        assert interface.session.cost > interface.session.cost_hard_limit
+        self.assertTrue(any(("Interface.[127.0.0.1:" in msg and "closing session over resource usage" in msg)
+                            for msg in logs.output))

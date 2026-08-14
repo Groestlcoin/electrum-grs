@@ -1026,7 +1026,6 @@ class LNWallet(Logger):
                 features |= LnFeatures.OPTION_ONION_MESSAGE_OPT
             if self.config.EXPERIMENTAL_LN_FORWARD_PAYMENTS and self.config.LIGHTNING_USE_GOSSIP:
                 features |= LnFeatures.GOSSIP_QUERIES_OPT  # signal we have gossip to fetch
-        Logger.__init__(self)
         self.lock = threading.RLock()
         self.lnpeermgr = LNPeerManager(self.node_keypair, features=features, config=self.config, lnwallet_or_lngossip=self)
         self.taskgroup = OldTaskGroup()
@@ -1669,6 +1668,7 @@ class LNWallet(Logger):
         assert type(temp_chan.storage) is dict
         channel_id = temp_chan.channel_id.hex()
         channels_db = self.db.get_dict('channels')
+        assert channel_id not in channels_db
         channels_db[channel_id] = temp_chan.storage
         jit_opening_fee = temp_chan.jit_opening_fee
         peer_state = temp_chan.peer_state
@@ -2298,7 +2298,7 @@ class LNWallet(Logger):
             except Exception:
                 return None
 
-    def _check_bolt11_invoice(self, bolt11_invoice: str, *, amount_msat: int = None) -> BOLT11Addr:
+    def _check_bolt11_invoice(self, bolt11_invoice: str, *, amount_msat: int = None, max_min_final_cltv_delta=NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE) -> BOLT11Addr:
         """Parses and validates a bolt11 invoice str into a BOLT11Addr.
         Includes pre-payment checks external to the parser.
         """
@@ -2314,7 +2314,7 @@ class LNWallet(Logger):
         if addr.amount is None:
             raise InvoiceError(_("Missing amount"))
         # check cltv
-        if addr.get_min_final_cltv_delta() > NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE:
+        if addr.get_min_final_cltv_delta() > max_min_final_cltv_delta:
             raise InvoiceError("{}\n{}".format(
                 _("Invoice wants us to risk locking funds for unreasonably long."),
                 f"min_final_cltv_delta: {addr.get_min_final_cltv_delta()}"))
@@ -2754,6 +2754,11 @@ class LNWallet(Logger):
         - all gets fulfilled, or
         - none of them gets fulfilled.
         (we are the recipient of this payment)
+        note: payment bundles are kept only in-memory. if the process restarts the bundle is dissolved and the
+              payments with known preimage will get settled immediately independent of the other parts status.
+              For swaps specifically this is fine as only swapservers receive a (bundled) trusted prepayment. Swapservers
+              are long-running daemon and the risk of them restarting mid-swap and claiming a prepayment for an
+              otherwise failing swap is negligible.
         """
         payment_keys = [self._get_payment_key(x) for x in hash_list]
         with self.lock:
@@ -2767,6 +2772,9 @@ class LNWallet(Logger):
             for pkey in payment_keys:
                 self._payment_bundles_pkey_to_canon[pkey] = canon_pkey
             self._payment_bundles_canon_to_pkeylist[canon_pkey] = tuple(payment_keys)
+
+    def has_payment_bundle(self, payment_hash: bytes) -> bool:
+        return bool(self.get_payment_bundle(self._get_payment_key(payment_hash)))
 
     def get_payment_bundle(self, payment_key: Union[bytes, str]) -> Sequence[bytes]:
         with self.lock:
@@ -3156,6 +3164,8 @@ class LNWallet(Logger):
             upstream_peer.downstream_htlc_resolved_event.clear()
 
     def htlc_fulfilled(self, chan: Channel, payment_hash: bytes, htlc_id: int):
+        """Called when an HTLC *WE proposed* becomes irrevocably fulfilled."""
+        # note: this may be called several times for the same htlc
 
         util.trigger_callback('htlc_fulfilled', payment_hash, chan, htlc_id)
         htlc_key = serialize_htlc_key(chan.get_scid_or_local_alias(), htlc_id)
@@ -3203,7 +3213,9 @@ class LNWallet(Logger):
             payment_hash: bytes,
             htlc_id: int,
             error_bytes: Optional[bytes],
-            failure_message: Optional['OnionRoutingFailure']):
+            failure_message: Optional['OnionRoutingFailure'],
+    ):
+        """Called when an HTLC *WE proposed* becomes irrevocably failed."""
         # note: this may be called several times for the same htlc
 
         util.trigger_callback('htlc_failed', payment_hash, chan, htlc_id)
@@ -3975,8 +3987,9 @@ class LNWallet(Logger):
         #        - for example; atm we forward first and then persist "forwarding_info",
         #          so if we segfault in-between and restart, we might forward an HTLC twice...
         #          (same for trampoline forwarding)
-        #        - we could check for the exposure to dust HTLCs, see:
+        #        - we should check for the exposure to dust HTLCs ("max_dust_htlc_exposure_msat"), see:
         #          https://github.com/ACINQ/eclair/pull/1985
+        #          https://github.com/lightning/bolts/blob/35e79db504560b9d3494a0ed07bf1e8379c3663a/02-peer-protocol.md#bounding-exposure-to-trimmed-in-flight-htlcs-max_dust_htlc_exposure_msat
 
         def log_fail_reason(reason: str):
             self.logger.debug(

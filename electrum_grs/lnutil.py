@@ -56,7 +56,12 @@ HTLC_OUTPUT_WEIGHT = 172
 FIXED_ANCHOR_SAT = 330
 
 LN_MAX_FUNDING_SAT_LEGACY = pow(2, 24) - 1
-DUST_LIMIT_MAX = 1000
+
+# We should tolerate higher-ish "dust_limit_sat" for channels,
+# however we cannot set this too high until we implement "max_dust_htlc_exposure_msat".
+# Until then, our exposure is (max_accepted_htlcs * dust_limit_sat).
+# ref https://github.com/lightning/bolts/commit/b456256b2e515359da3ff8bb14bb0337cac24969
+DUST_LIMIT_MAX = 5_000
 
 SCRIPT_TEMPLATE_FUNDING = [opcodes.OP_2, OPPushDataPubkey, OPPushDataPubkey, opcodes.OP_2, opcodes.OP_CHECKMULTISIG]
 
@@ -1141,18 +1146,18 @@ def make_commitment_outputs(
     has_anchors: bool,
     local_anchor_script: Optional[str],
     remote_anchor_script: Optional[str]
-) -> Tuple[List[PartialTxOutput], List[PartialTxOutput]]:
+) -> List[PartialTxOutput]:
 
-    # determine HTLC outputs and trim below dust to know if anchors need to be included
+    # convert htlcs to tx outputs
     htlc_outputs = []
     for script, htlc in htlcs:
         addr = bitcoin.redeem_script_to_address('p2wsh', script)
-        if htlc.amount_msat // 1000 > dust_limit_sat:
-            htlc_outputs.append(
-                PartialTxOutput(
-                    scriptpubkey=address_to_script(addr),
-                    value=htlc.amount_msat // 1000
-                ))
+        assert htlc.amount_msat // 1000 >= dust_limit_sat, f"{htlc} should have been trimmed before"
+        htlc_outputs.append(
+            PartialTxOutput(
+                scriptpubkey=address_to_script(addr),
+                value=htlc.amount_msat // 1000
+            ))
 
     # BOLT-03: "Base commitment transaction fees are extracted from the funder's amount;
     #           if that amount is insufficient, the entire amount of the funder's output is used."
@@ -1178,14 +1183,15 @@ def make_commitment_outputs(
             anchor_outputs.append(PartialTxOutput(scriptpubkey=remote_anchor_script, value=FIXED_ANCHOR_SAT))
 
     # if funder cannot afford feerate, their output might go negative, so take max(0, x) here
-    to_local_amt_msat = max(0, to_local_amt_msat)
-    to_remote_amt_msat = max(0, to_remote_amt_msat)
-    non_htlc_outputs.append(PartialTxOutput(scriptpubkey=local_script, value=to_local_amt_msat // 1000))
-    non_htlc_outputs.append(PartialTxOutput(scriptpubkey=remote_script, value=to_remote_amt_msat // 1000))
+    to_local_amt_sat = max(0, to_local_amt_msat) // 1000
+    to_remote_amt_sat = max(0, to_remote_amt_msat) // 1000
+    if to_local_amt_sat >= dust_limit_sat:
+        non_htlc_outputs.append(PartialTxOutput(scriptpubkey=local_script, value=to_local_amt_sat))
+    if to_remote_amt_sat >= dust_limit_sat:
+        non_htlc_outputs.append(PartialTxOutput(scriptpubkey=remote_script, value=to_remote_amt_sat))
 
-    c_outputs_filtered = list(filter(lambda x: x.value >= dust_limit_sat, non_htlc_outputs + htlc_outputs))
-    c_outputs = c_outputs_filtered + anchor_outputs
-    return htlc_outputs, c_outputs
+    c_outputs = non_htlc_outputs + htlc_outputs + anchor_outputs
+    return c_outputs
 
 
 def effective_htlc_tx_weight(success: bool, has_anchors: bool):
@@ -1294,7 +1300,7 @@ def make_commitment(
     htlcs = list(htlcs)
     htlcs.sort(key=lambda x: x.htlc.cltv_abs)
 
-    htlc_outputs, c_outputs_filtered = make_commitment_outputs(
+    c_outputs_filtered = make_commitment_outputs(
         fees_per_participant=fees_per_participant,
         local_amount_msat=local_amount,
         remote_amount_msat=remote_amount,

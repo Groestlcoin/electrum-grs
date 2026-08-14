@@ -513,7 +513,6 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             for chan_id, chan in self.lnworker.channels.items():
                 channel_backups[chan_id.hex()] = self.lnworker.create_channel_backup(chan_id)
             new_db.put('channels', None)
-            new_db.put('lightning_privkey2', None)
         new_db.set_modified(True)
         new_db.write()
         return new_path
@@ -3469,6 +3468,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
 
         rl = TxSighashRiskLevel
         hintmap = {
+            -1:                   (rl.INSANE_SIGHASH, _('Input {} is using an unknown sighash.')),
             0:                    (rl.SAFE,           None),
             Sighash.NONE:         (rl.INSANE_SIGHASH, _('Input {} is marked SIGHASH_NONE.')),
             Sighash.SINGLE:       (rl.WEIRD_SIGHASH,  _('Input {} is marked SIGHASH_SINGLE.')),
@@ -3485,8 +3485,12 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 sh_base = txin.sighash & (Sighash.ANYONECANPAY ^ 0xff)
                 sh_acp = txin.sighash & Sighash.ANYONECANPAY
                 for sh in [sh_base, sh_acp]:
-                    if msg := hintmap[sh][1]:
-                        risk_level = hintmap[sh][0]
+                    try:
+                        hint = hintmap[sh]
+                    except KeyError:
+                        hint = hintmap[-1]  # "unknown sighash"
+                    if msg := hint[1]:
+                        risk_level = hint[0]
                         header = _('Fatal') if TxSighashDanger(risk_level=risk_level).needs_reject() else _('Warning')
                         shd = TxSighashDanger(
                             risk_level=risk_level,
