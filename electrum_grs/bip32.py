@@ -154,7 +154,13 @@ class BIP32Node(NamedTuple):
         xtype = headers_inv[header]
         if not allow_custom_headers and xtype != "standard":
             raise ValueError(f"only standard xpub/xprv allowed. found custom xtype={xtype}")
+        if depth == 0 and (child_number != bytes(4) or fingerprint != bytes(4)):
+            raise BitcoinException('Invalid extended key: a depth-0 (master) key must have '
+                                   'zero child number and zero parent fingerprint')
         if is_private:
+            if xkey[13 + 32] != 0:
+                raise BitcoinException('Invalid extended private key: '
+                                       'key data must be prefixed with 0x00')
             eckey = ecc.ECPrivkey(xkey[13 + 33:])
         else:
             eckey = ecc.ECPubkey(xkey[13 + 32:])

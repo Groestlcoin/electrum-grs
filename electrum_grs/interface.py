@@ -235,14 +235,14 @@ class NotificationSession(RPCSession):
         # note: multiple Synchronizers (from different Wallet objects) might sub to the same key,
         #       hence subscriptions map key->list[queue]
         self.subscriptions[key].append(queue)
-        if key in self.subs_cache:
-            result = self.subs_cache[key]
-        else:
+        if key not in self.subs_cache:
             # note: until subs_cache is written for the first time,
             #       each 'subscribe' call might make a request on the network.
             result = await self.send_request(method, params)
-            self.subs_cache[key] = result
-        await queue.put(params + [result])
+            # don't override what was already set in handle_request, it might be newer than the send_request response
+            if key not in self.subs_cache:
+                self.subs_cache[key] = result
+        await queue.put(params + [self.subs_cache[key]])
 
     def unsubscribe(self, queue):
         """Unsubscribe a callback to free object references to enable GC."""
@@ -607,6 +607,7 @@ class Interface(Logger):
         assert network.config.path
         self.cert_path = _get_cert_path_for_host(config=network.config, host=self.host)
         self.blockchain = None  # type: Optional[Blockchain]
+        self.bc_mgr = network.bc_mgr
         self._requested_chunks = set()  # type: Set[int]
         self.network = network
         self.session = None  # type: Optional[NotificationSession]
@@ -797,9 +798,9 @@ class Interface(Logger):
             return
 
         assert self.tip_header
-        chain = blockchain.check_header(self.tip_header)
+        chain = self.bc_mgr.check_header(self.tip_header)
         if not chain:
-            self.blockchain = blockchain.get_best_chain()
+            self.blockchain = self.bc_mgr.get_best_chain()
         else:
             self.blockchain = chain
         assert self.blockchain is not None
@@ -1239,7 +1240,7 @@ class Interface(Logger):
         )
         header = await self.get_block_header(height, mode=ChainResolutionMode.CATCHUP)
 
-        chain = blockchain.check_header(header)
+        chain = self.bc_mgr.check_header(header)
         if chain:
             self.blockchain = chain
             # note: there is an edge case here that is not handled.
@@ -1248,12 +1249,12 @@ class Interface(Logger):
             # this situation resolves itself on the next block
             return ChainResolutionMode.CATCHUP, height+1
 
-        can_connect = blockchain.can_connect(header)
+        can_connect = self.bc_mgr.can_connect(header)
         if not can_connect:
             self.logger.info(f"can't connect new block: {height=}")
             height, header, bad, bad_header = await self._search_headers_backwards(height, header=header)
-            chain = blockchain.check_header(header)
-            can_connect = blockchain.can_connect(header)
+            chain = self.bc_mgr.check_header(header)
+            can_connect = self.bc_mgr.can_connect(header)
             assert chain or can_connect
         if can_connect:
             height += 1
@@ -1272,7 +1273,7 @@ class Interface(Logger):
         chain: Optional[Blockchain],
     ) -> Tuple[int, int, dict]:
         assert bad == bad_header['block_height']
-        _assert_header_does_not_check_against_any_chain(bad_header)
+        self._assert_header_does_not_check_against_any_chain(bad_header)
 
         self.blockchain = chain
         good = height
@@ -1284,7 +1285,7 @@ class Interface(Logger):
                 await self._maybe_warm_headers_cache(
                     from_height=good, to_height=bad, mode=ChainResolutionMode.BINARY)
             header = await self.get_block_header(height, mode=ChainResolutionMode.BINARY)
-            chain = blockchain.check_header(header)
+            chain = self.bc_mgr.check_header(header)
             if chain:
                 self.blockchain = chain
                 good = height
@@ -1296,7 +1297,7 @@ class Interface(Logger):
 
         if not self.blockchain.can_connect(bad_header, check_height=False):
             raise Exception('unexpected bad header during binary: {}'.format(bad_header))
-        _assert_header_does_not_check_against_any_chain(bad_header)
+        self._assert_header_does_not_check_against_any_chain(bad_header)
 
         self.logger.info(f"binary search exited. good {good}, bad {bad}. {chain=}")
         return good, bad, bad_header
@@ -1309,7 +1310,7 @@ class Interface(Logger):
     ) -> Tuple[ChainResolutionMode, int]:
         assert good + 1 == bad
         assert bad == bad_header['block_height']
-        _assert_header_does_not_check_against_any_chain(bad_header)
+        self._assert_header_does_not_check_against_any_chain(bad_header)
         # 'good' is the height of a block 'good_header', somewhere in self.blockchain.
         # bad_header connects to good_header; bad_header itself is NOT in self.blockchain.
 
@@ -1341,8 +1342,8 @@ class Interface(Logger):
                 height = constants.net.max_checkpoint()
                 checkp = True
             header = await self.get_block_header(height, mode=ChainResolutionMode.BACKWARD)
-            chain = blockchain.check_header(header)
-            can_connect = blockchain.can_connect(header)
+            chain = self.bc_mgr.check_header(header)
+            can_connect = self.bc_mgr.can_connect(header)
             if chain or can_connect:
                 return False
             if checkp:
@@ -1350,8 +1351,9 @@ class Interface(Logger):
             return True
 
         bad, bad_header = height, header
-        _assert_header_does_not_check_against_any_chain(bad_header)
-        with blockchain.blockchains_lock: chains = list(blockchain.blockchains.values())
+        self._assert_header_does_not_check_against_any_chain(bad_header)
+        with self.bc_mgr.blockchains_lock:
+            chains = list(self.bc_mgr.blockchains.values())
         local_max = max([0] + [x.height() for x in chains])
         height = min(local_max + 1, height - 1)
         assert height >= 0
@@ -1365,7 +1367,7 @@ class Interface(Logger):
             height -= delta
             delta *= 2
 
-        _assert_header_does_not_check_against_any_chain(bad_header)
+        self._assert_header_does_not_check_against_any_chain(bad_header)
         self.logger.info(f"exiting backward mode at {height}")
         return height, header, bad, bad_header
 
@@ -1676,11 +1678,30 @@ class Interface(Logger):
             res = int(res * bitcoin.COIN)
         return res
 
+    async def get_server_peers(self) -> list[tuple[str, str, Sequence[str]]]:
+        # do request
+        peers = await self.session.send_request('server.peers.subscribe')
+        # check response
+        assert_list_or_tuple(peers)
+        for peer in peers:
+            assert_list_or_tuple(peer)
+            if len(peer) != 3:
+                raise RequestCorrupted(f"found peer in list with unexpected length. {peer=!r}")
+            ip_addr, hostname, features = peer
+            if not isinstance(ip_addr, str):
+                raise RequestCorrupted(f"peer ip_addr should be str, got {ip_addr!r}")
+            if not isinstance(hostname, str):
+                raise RequestCorrupted(f"peer hostname should be str, got {hostname!r}")
+            assert_list_or_tuple(features)
+            for feat in features:
+                if not isinstance(feat, str):
+                    raise RequestCorrupted(f"peer feature should be str, got {feat!r}")
+        return [tuple(peer) for peer in peers]
 
-def _assert_header_does_not_check_against_any_chain(header: dict) -> None:
-    chain_bad = blockchain.check_header(header)
-    if chain_bad:
-        raise Exception('bad_header must not check!')
+    def _assert_header_does_not_check_against_any_chain(self, header: dict) -> None:
+        chain_bad = self.bc_mgr.check_header(header)
+        if chain_bad:
+            raise Exception('bad_header must not check!')
 
 
 def sanitize_tx_broadcast_response(server_msg) -> str:

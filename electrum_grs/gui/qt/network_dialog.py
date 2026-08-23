@@ -34,7 +34,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QIntValidator
 
 from electrum_grs.i18n import _
-from electrum_grs import blockchain
 from electrum_grs.interface import ServerAddr, PREFERRED_NETWORK_PROTOCOL
 from electrum_grs.network import Network, ProxySettings, is_valid_host, is_valid_port
 from electrum_grs.logging import get_logger
@@ -155,7 +154,7 @@ class NodesListWidget(QTreeWidget):
         chains = network.get_blockchains()
         n_chains = len(chains)
         for chain_id, interfaces in chains.items():
-            b = blockchain.blockchains.get(chain_id)
+            b = self.network.bc_mgr.blockchains.get(chain_id)
             if b is None:
                 continue
             name = b.get_name()
