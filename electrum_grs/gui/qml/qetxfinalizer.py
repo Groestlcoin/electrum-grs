@@ -21,7 +21,7 @@ from electrum_grs.fee_policy import FeePolicy, FeeMethod
 from electrum_grs.network import NetworkException
 
 from electrum_grs.gui import messages
-from electrum_grs.gui.common_qt.util import QtEventListener
+from electrum_grs.gui.common_qt.util import QtEventListener, ignore_if_destroyed
 
 from .qewallet import QEWallet
 from .qetypes import QEAmount
@@ -1161,6 +1161,7 @@ class QETxSweepFinalizer(QETxFinalizer):
     def update_privkeys(self):
         privkeys = keystore.get_private_keys(self._private_keys)
 
+        @ignore_if_destroyed(self)
         def fetch_privkeys_info():
             try:
                 self._txins = self._wallet.wallet.network.run_from_another_thread(sweep_preparations(privkeys, self._wallet.wallet.network))

@@ -10,12 +10,13 @@ from electrum_grs.address_synchronizer import TX_HEIGHT_LOCAL
 from electrum_grs import bitcoin
 import electrum_grs.trampoline
 from electrum_grs.channel_db import UpdateStatus
-from electrum_grs.lnutil import RECEIVED, MIN_FINAL_CLTV_DELTA_ACCEPTED, serialize_htlc_key, LnFeatures, HTLCOwner
+from electrum_grs.lnutil import RECEIVED, SENT, MIN_FINAL_CLTV_DELTA_ACCEPTED, serialize_htlc_key, LnFeatures, HTLCOwner, PaymentFailure
 from electrum_grs.logging import console_stderr_handler
 from electrum_grs.lnmsg import decode_msg
 from electrum_grs.lnrouter import RouteEdge
+from electrum_grs.bolt11 import encode_bolt11_invoice, BOLT11Addr
 from electrum_grs.lntransport import LNPeerAddr
-from electrum_grs.invoices import LN_EXPIRY_NEVER, PR_UNPAID
+from electrum_grs.invoices import LN_EXPIRY_NEVER, PR_UNPAID, PR_INFLIGHT, Invoice
 from electrum_grs.lnpeer import Peer
 from electrum_grs.lnchannel import Channel, ChannelState
 from electrum_grs.lnonion import OnionPacket, OnionRoutingFailure, OnionFailureCode
@@ -72,6 +73,39 @@ class TestLNWallet(ElectrumTestCase):
                 min_final_cltv_delta=min_final_cltv_delta,
                 exp_delay=exp_delay,
             )
+
+    async def test_pay_invoice_rejects_second_attempt_while_first_is_inflight(self):
+        """A second attempt to pay an invoice with equal payment hash must be rejected while an earlier attempt is
+        still running, even before that attempt has committed any htlc to a channel yet.
+        """
+        sender = self.lnwallet_anchors
+        recipient = self.create_mock_lnwallet(name='recipient')
+        lnaddr, _pay_req = lnhelpers.prepare_invoice(recipient)
+        payment_hash = lnaddr.paymenthash
+        key = payment_hash.hex()
+        # same payment hash, but different payment secret
+        pay_req2 = Invoice.from_bech32(encode_bolt11_invoice(
+            BOLT11Addr(
+                paymenthash=payment_hash,
+                amount=lnaddr.amount,
+                tags=[
+                    ('c', MIN_FINAL_CLTV_DELTA_ACCEPTED),
+                    ('d', 'test'),
+                    ('9', recipient.features.for_bolt11_invoice()),
+                    ('x', 3600),
+                ],
+                payment_secret=os.urandom(32),
+            ),
+            recipient.node_keypair.privkey))
+        self.assertEqual(key, pay_req2.rhash)
+
+        # first payment attempt sets invoice status inflight but no htlcs have been added yet (e.g. during pathfinding)
+        sender.set_invoice_status(key, PR_INFLIGHT)
+        self.assertEqual({}, sender.get_payments(status='inflight'))
+
+        with self.assertRaises(PaymentFailure):
+            await sender.pay_invoice(pay_req2)
+        self.assertNotIn(key, sender.logs)  # rejected before pay_to_node opened a session
 
     async def test_trampoline_invoice_features_and_routing_hints(self):
         """

@@ -25,6 +25,7 @@ from electrum_grs import WalletStorage, mnemonic, keystore
 from electrum_grs.wallet_db import WalletDB
 from electrum_grs.wizard import NewWalletWizard, KeystoreWizard, WizardViewState
 
+from electrum_grs.gui.common_qt.util import ignore_if_destroyed
 from electrum_grs.gui.qt.bip39_recovery_dialog import Bip39RecoveryDialog
 from electrum_grs.gui.qt.password_dialog import PasswordLayout, PW_NEW, MSG_ENTER_PASSWORD, PasswordLayoutForHW
 from electrum_grs.gui.qt.seed_dialog import SeedWidget, MSG_PASSPHRASE_WARN_ISSUE4566, KeysWidget
@@ -1175,6 +1176,7 @@ class WCChooseHWDevice(WalletWizardComponent, Logger):
         self.busy_msg = _('Scanning devices...')
         self.busy = True
 
+        @ignore_if_destroyed(self)
         def scan_task():
             # check available plugins
             supported_plugins = self.plugins.get_hardware_support()

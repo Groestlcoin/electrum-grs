@@ -20,7 +20,7 @@ from electrum_grs.bitcoin import COIN, address_to_script
 from electrum_grs.payment_identifier import PaymentIdentifier, PaymentIdentifierState, PaymentIdentifierType
 from electrum_grs.util import event_listener, now, InvoiceError
 
-from electrum_grs.gui.common_qt.util import QtEventListener
+from electrum_grs.gui.common_qt.util import QtEventListener, ignore_if_destroyed
 
 from .qetypes import QEAmount
 from .qewallet import QEWallet
@@ -442,6 +442,7 @@ class QEInvoice(QObject, QtEventListener):
 
         self._updating_max = True
 
+        @ignore_if_destroyed(self)
         def calc_max(address):
             try:
                 outputs = [PartialTxOutput(scriptpubkey=address_to_script(address), value='!')]

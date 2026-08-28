@@ -1614,6 +1614,9 @@ class Peer(Logger, EventListener):
             self.schedule_force_closing(chan.channel_id)
             raise RemoteMisbehaving("channel_reestablish: data loss protect fields invalid")
         fut = self.channel_reestablish_msg[chan.channel_id]
+        def _fail_fut(exc):
+            fut.set_exception(exc)
+            fut.exception()  # mark as retrieved, so it doesn't pollute log output with "was never retrieved" warnings
         if they_are_ahead_with_proof:  # order matters, WE_ARE_TOXIC case must be checked first.
             self.logger.warning(
                 f"channel_reestablish ({chan.get_id_for_log()}): "
@@ -1625,19 +1628,19 @@ class Peer(Logger, EventListener):
             chan.peer_state = PeerState.BAD
             # raise after we send channel_reestablish, so the remote can realize they are ahead
             # FIXME what if we have multiple chans with peer? timing...
-            fut.set_exception(GracefulDisconnect("remote ahead of us (with proof)"))
+            _fail_fut(GracefulDisconnect("remote ahead of us (with proof)"))
         elif they_are_ahead_without_proof:
             self.logger.warning(
                 f"channel_reestablish ({chan.get_id_for_log()}): "
                 f"remote is ahead of us (without proof)! trying to force-close.")
             self.schedule_force_closing(chan.channel_id)
             # FIXME what if we have multiple chans with peer? timing...
-            fut.set_exception(GracefulDisconnect("remote ahead of us (without proof)"))
+            _fail_fut(GracefulDisconnect("remote ahead of us (without proof)"))
         elif we_are_ahead:
             self.logger.warning(f"channel_reestablish ({chan.get_id_for_log()}): we are ahead of remote! trying to force-close.")
             self.schedule_force_closing(chan.channel_id)
             # FIXME what if we have multiple chans with peer? timing...
-            fut.set_exception(GracefulDisconnect("we are ahead of remote"))
+            _fail_fut(GracefulDisconnect("we are ahead of remote"))
         else:
             # all good
             fut.set_result((we_must_resend_revoke_and_ack, their_next_local_ctn))
@@ -1949,16 +1952,16 @@ class Peer(Logger, EventListener):
         htlc_id = payload["id"]
         reason = payload["reason"]
         self.logger.info(f"on_update_fail_htlc. chan {chan.short_channel_id}. htlc_id {htlc_id}")
-        if not chan.can_update_ctx(proposer=REMOTE):
+        if not chan.can_progress_ctx():
             self.logger.warning(
-                f"on_update_fail_htlc. dropping message. illegal action. "
+                f"on_update_fail_htlc. illegal action. "
                 f"chan={chan.get_id_for_log()}. {htlc_id=}. {chan.get_state()=!r}. {chan.peer_state=!r}")
-            return
+            raise RemoteMisbehaving("received update_fail_htlc when not allowed")
         chan.receive_fail_htlc(htlc_id, error_bytes=reason)  # TODO handle exc and maybe fail channel (e.g. bad htlc_id)
 
     def maybe_send_commitment(self, chan: Channel) -> bool:
         assert util.get_running_loop() == util.get_asyncio_loop(), f"this must be run on the asyncio thread!"
-        if not chan.can_update_ctx(proposer=LOCAL):
+        if not chan.can_progress_ctx():
             return False
         # REMOTE should revoke first before we can sign a new ctx
         if chan.hm.is_revack_pending(REMOTE):
@@ -2039,8 +2042,7 @@ class Peer(Logger, EventListener):
         return htlc
 
     def send_revoke_and_ack(self, chan: Channel) -> None:
-        if not chan.can_update_ctx(proposer=LOCAL):
-            return
+        assert chan.can_progress_ctx(), chan.get_state()
         self.logger.info(f'send_revoke_and_ack. chan {chan.short_channel_id}. ctn: {chan.get_oldest_unrevoked_ctn(LOCAL)}')
         rev = chan.revoke_current_commitment()
         self.lnworker.save_channel(chan)
@@ -2052,11 +2054,11 @@ class Peer(Logger, EventListener):
 
     def on_commitment_signed(self, chan: Channel, payload) -> None:
         self.logger.info(f'on_commitment_signed. chan {chan.short_channel_id}. ctn: {chan.get_next_ctn(LOCAL)}.')
-        if not chan.can_update_ctx(proposer=REMOTE):
+        if not chan.can_progress_ctx():
             self.logger.warning(
-                f"on_commitment_signed. dropping message. illegal action. "
+                f"on_commitment_signed. illegal action. "
                 f"chan={chan.get_id_for_log()}. {chan.get_state()=!r}. {chan.peer_state=!r}")
-            return
+            raise RemoteMisbehaving("received commitment_signed when not allowed")
         # make sure there were changes to the ctx, otherwise the remote peer is misbehaving
         if not chan.has_pending_changes(LOCAL):
             # TODO if feerate changed A->B->A; so there were updates but the value is identical,
@@ -2078,11 +2080,11 @@ class Peer(Logger, EventListener):
         payment_hash = sha256(preimage)
         htlc_id = payload["id"]
         self.logger.info(f"on_update_fulfill_htlc. chan {chan.short_channel_id}. htlc_id {htlc_id}")
-        if not chan.can_update_ctx(proposer=REMOTE):
+        if not chan.can_progress_ctx():
             self.logger.warning(
-                f"on_update_fulfill_htlc. dropping message. illegal action. "
+                f"on_update_fulfill_htlc. illegal action. "
                 f"chan={chan.get_id_for_log()}. {htlc_id=}. {chan.get_state()=!r}. {chan.peer_state=!r}")
-            return
+            raise RemoteMisbehaving("received update_fulfill_htlc when not allowed")
         chan.receive_htlc_settle(preimage, htlc_id)  # TODO handle exc and maybe fail channel (e.g. bad htlc_id)
 
     def on_update_fail_malformed_htlc(self, chan: Channel, payload):
@@ -2090,11 +2092,11 @@ class Peer(Logger, EventListener):
         failure_code = payload["failure_code"]
         self.logger.info(f"on_update_fail_malformed_htlc. chan {chan.get_id_for_log()}. "
                          f"htlc_id {htlc_id}. failure_code={failure_code}")
-        if not chan.can_update_ctx(proposer=REMOTE):
+        if not chan.can_progress_ctx():
             self.logger.warning(
-                f"on_update_fail_malformed_htlc. dropping message. illegal action. "
+                f"on_update_fail_malformed_htlc. illegal action. "
                 f"chan={chan.get_id_for_log()}. {htlc_id=}. {chan.get_state()=!r}. {chan.peer_state=!r}")
-            return
+            raise RemoteMisbehaving("received update_fail_malformed_htlc when not allowed")
         if failure_code & OnionFailureCodeMetaFlag.BADONION == 0:
             self.schedule_force_closing(chan.channel_id)
             raise RemoteMisbehaving(f"received update_fail_malformed_htlc with unexpected failure code: {failure_code}")
@@ -2116,11 +2118,11 @@ class Peer(Logger, EventListener):
         self.logger.info(f"on_update_add_htlc. chan {chan.short_channel_id}. htlc={str(htlc)}")
         if chan.get_state() != ChannelState.OPEN:
             raise RemoteMisbehaving(f"received update_add_htlc while chan.get_state() != OPEN. state was {chan.get_state()!r}")
-        if not chan.can_update_ctx(proposer=REMOTE):
+        if not chan.can_progress_ctx():
             self.logger.warning(
-                f"on_update_add_htlc. dropping message. illegal action. "
+                f"on_update_add_htlc. illegal action. "
                 f"chan={chan.get_id_for_log()}. {htlc_id=}. {chan.get_state()=!r}. {chan.peer_state=!r}")
-            return
+            raise RemoteMisbehaving("received update_add_htlc when not allowed")
         if cltv_abs > bitcoin.NLOCKTIME_BLOCKHEIGHT_MAX:
             self.schedule_force_closing(chan.channel_id)
             raise RemoteMisbehaving(f"received update_add_htlc with {cltv_abs=} > BLOCKHEIGHT_MAX")
@@ -2207,6 +2209,13 @@ class Peer(Logger, EventListener):
 
         payment_hash = htlc.payment_hash
         if not processed_onion.are_we_final:
+            # check that forwarding is enabled in config.
+            fw_enabled = self.config.EXPERIMENTAL_LN_FORWARD_PAYMENTS
+            if outer_onion_payment_secret:
+                fw_enabled = fw_enabled and self.config.EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS
+            if not fw_enabled:
+                _log_fail_reason("forwarding is disabled")
+                raise OnionRoutingFailure(code=OnionFailureCode.PERMANENT_CHANNEL_FAILURE, data=b'')
             if outer_onion_payment_secret:
                 # this is a trampoline forwarding htlc, multiple incoming trampoline htlcs can be collected
                 payment_key = (payment_hash + outer_onion_payment_secret).hex()
@@ -2320,7 +2329,7 @@ class Peer(Logger, EventListener):
             if chan is None:
                 # this htlc belongs to another peer and has to be settled in their htlc_switch
                 continue
-            if not chan.can_update_ctx(proposer=LOCAL):
+            if not chan.can_send_ctx_updates():
                 continue
             self.logger.info(f"fulfill htlc: {chan.short_channel_id}. {htlc_id=}. {payment_hash.hex()=}")
             if chan.hm.was_htlc_preimage_released(htlc_id=htlc_id, htlc_proposer=REMOTE):
@@ -2363,7 +2372,7 @@ class Peer(Logger, EventListener):
             if chan is None:
                 # this htlc belongs to another peer and has to be settled in their htlc_switch
                 continue
-            if not chan.can_update_ctx(proposer=LOCAL):
+            if not chan.can_send_ctx_updates():
                 continue
             assert chan.hm.is_htlc_irrevocably_added_yet(htlc_proposer=REMOTE, htlc_id=htlc_id)
             if chan.hm.was_htlc_failed(htlc_id=htlc_id, htlc_proposer=REMOTE):
@@ -2406,7 +2415,7 @@ class Peer(Logger, EventListener):
 
     def fail_htlc(self, *, chan: Channel, htlc_id: int, error_bytes: bytes):
         self.logger.info(f"fail_htlc. chan {chan.short_channel_id}. htlc_id {htlc_id}.")
-        assert chan.can_update_ctx(proposer=LOCAL), f"cannot send updates: {chan.short_channel_id}"
+        assert chan.can_send_ctx_updates(), f"cannot send updates: {chan.short_channel_id}"
         self.received_htlcs_pending_removal.add((chan, htlc_id))
         chan.fail_htlc(htlc_id)
         self.send_message(
@@ -2419,7 +2428,7 @@ class Peer(Logger, EventListener):
 
     def fail_malformed_htlc(self, *, chan: Channel, htlc_id: int, reason: OnionParsingError):
         self.logger.info(f"fail_malformed_htlc. chan {chan.short_channel_id}. htlc_id {htlc_id}.")
-        assert chan.can_update_ctx(proposer=LOCAL), f"cannot send updates: {chan.short_channel_id}"
+        assert chan.can_send_ctx_updates(), f"cannot send updates: {chan.short_channel_id}"
         if not (reason.code & OnionFailureCodeMetaFlag.BADONION and len(reason.data) == 32):
             raise Exception(f"unexpected reason when sending 'update_fail_malformed_htlc': {reason!r}")
         self.received_htlcs_pending_removal.add((chan, htlc_id))
@@ -2434,11 +2443,11 @@ class Peer(Logger, EventListener):
 
     def on_revoke_and_ack(self, chan: Channel, payload) -> None:
         self.logger.info(f'on_revoke_and_ack. chan {chan.short_channel_id}. ctn: {chan.get_oldest_unrevoked_ctn(REMOTE)}')
-        if not chan.can_update_ctx(proposer=REMOTE):
+        if not chan.can_progress_ctx():
             self.logger.warning(
-                f"on_revoke_and_ack. dropping message. illegal action. "
+                f"on_revoke_and_ack. illegal action. "
                 f"chan={chan.get_id_for_log()}. {chan.get_state()=!r}. {chan.peer_state=!r}")
-            return
+            raise RemoteMisbehaving("received revack when not allowed")
         rev = RevokeAndAck(payload["per_commitment_secret"], payload["next_per_commitment_point"])
         chan.receive_revocation(rev)
         self.lnworker.save_channel(chan)
@@ -2453,11 +2462,11 @@ class Peer(Logger, EventListener):
         await self.taskgroup.spawn(async_wrapper)
 
     def on_update_fee(self, chan: Channel, payload):
-        if not chan.can_update_ctx(proposer=REMOTE):
+        if not chan.can_progress_ctx():
             self.logger.warning(
-                f"on_update_fee. dropping message. illegal action. "
+                f"on_update_fee. illegal action. "
                 f"chan={chan.get_id_for_log()}. {chan.get_state()=!r}. {chan.peer_state=!r}")
-            return
+            raise RemoteMisbehaving("received update_fee when not allowed")
         feerate = payload["feerate_per_kw"]
         chan.update_fee(feerate, False)
 
@@ -2465,7 +2474,7 @@ class Peer(Logger, EventListener):
         """
         called when our fee estimates change
         """
-        if not chan.can_update_ctx(proposer=LOCAL):
+        if not chan.can_send_ctx_updates():
             return
         if chan.get_state() != ChannelState.OPEN:
             return
@@ -2875,7 +2884,7 @@ class Peer(Logger, EventListener):
         #    and not added to any set.
         #    Each htlc is only supposed to go through this first loop once when being received.
         for chan_id, chan in self.channels.items():
-            if not chan.can_update_ctx(proposer=LOCAL):
+            if not chan.can_send_ctx_updates():
                 continue
             self.maybe_send_commitment(chan)
             unfulfilled = chan.unfulfilled_htlcs
