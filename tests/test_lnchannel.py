@@ -29,6 +29,8 @@ import logging
 import dataclasses
 import time
 
+import electrum_ecc as ecc
+
 from electrum_grs import bitcoin
 from electrum_grs import lnchannel
 from electrum_grs import lnutil
@@ -40,6 +42,8 @@ from electrum_grs.lnutil import (
 )
 from electrum_grs.logging import console_stderr_handler
 from electrum_grs.lnchannel import ChannelState, Channel
+from electrum_grs.lnsweep import SweepInfo
+from electrum_grs.transaction import PartialTransaction, PartialTxOutput, Transaction, TxInput, tx_from_any
 
 from . import ElectrumTestCase
 from .lnhelpers import create_test_channels
@@ -865,7 +869,6 @@ class TestChanReserve(ElectrumTestCase):
         self.alice_channel = alice_channel
         self.bob_channel = bob_channel
 
-    @unittest.skip("broken probably because we haven't implemented detecting when we come out of a situation where we violate reserve")
     def test_part1(self):
         # Add an HTLC that will increase Bob's balance. This should succeed,
         # since Alice stays above her channel reserve, and Bob increases his
@@ -888,25 +891,20 @@ class TestChanReserve(ElectrumTestCase):
         # even though the channel reserves are not met.
         force_state_transition(self.alice_channel, self.bob_channel)
 
-        aliceSelfBalance = self.alice_channel.balance(LOCAL)\
-                - lnchannel.htlcsum(self.alice_channel.hm.htlcs_by_direction(LOCAL, SENT).values())
-        bobBalance = self.bob_channel.balance(REMOTE)\
-                - lnchannel.htlcsum(self.alice_channel.hm.htlcs_by_direction(REMOTE, SENT).values())
-        self.assertEqual(aliceSelfBalance, one_bitcoin_in_msat*4.5)
-        self.assertEqual(bobBalance, one_bitcoin_in_msat*5)
+        self.check_bals(int(4.5 * one_bitcoin_in_msat), one_bitcoin_in_msat * 5)
         # Now let Bob try to add an HTLC. This should fail, since it will
         # decrease his balance, which is already below the channel reserve.
         #
         # Resulting balances:
         #	Alice:	4.5
         #	Bob:	5.0
+        htlc = dataclasses.replace(htlc, payment_hash=bitcoin.sha256(32 * b'\x02'))
         with self.assertRaises(lnutil.PaymentFailure):
-            htlc = dataclasses.replace(htlc, payment_hash=bitcoin.sha256(32 * b'\x02'))
             self.bob_channel.add_htlc(htlc)
         with self.assertRaises(lnutil.RemoteMisbehaving):
             self.alice_channel.receive_htlc(htlc)
 
-    def part2(self):
+    def test_part2(self):
         paymentPreimage = b"\x01" * 32
         paymentHash = bitcoin.sha256(paymentPreimage)
         # Now we'll add HTLC of 3.5 BTC to Alice's commitment, this should put
@@ -914,11 +912,12 @@ class TestChanReserve(ElectrumTestCase):
         #
         # Resulting balances:
         #	Alice:	1.5
-        #	Bob:	9.5
+        #	Bob:	5.0
         htlc = UpdateAddHtlc(
             payment_hash=paymentHash,
             amount_msat=int(3.5 * one_bitcoin_in_msat),
             cltv_abs=5,
+            timestamp=0,
         )
         self.alice_channel.add_htlc(htlc)
         self.bob_channel.receive_htlc(htlc)
@@ -926,14 +925,18 @@ class TestChanReserve(ElectrumTestCase):
         # Alice's balance all the way down to her channel reserve, but since
         # she is the initiator the additional transaction fee makes her
         # balance dip below.
-        htlc = dataclasses.replace(htlc, amount_msat=one_bitcoin_in_msat)
+        htlc = dataclasses.replace(
+            htlc,
+            payment_hash=bitcoin.sha256(32 * b'\x02'),
+            amount_msat=one_bitcoin_in_msat,
+        )
         with self.assertRaises(lnutil.PaymentFailure):
             self.alice_channel.add_htlc(htlc)
         with self.assertRaises(lnutil.RemoteMisbehaving):
             self.bob_channel.receive_htlc(htlc)
 
-    def part3(self):
-        # Add a HTLC of 2 BTC to Alice, and the settle it.
+    async def test_part3(self):
+        # Add a HTLC of 2 BTC to Alice, and then settle it.
         # Resulting balances:
         #	Alice:	3.0
         #	Bob:	7.0
@@ -948,31 +951,37 @@ class TestChanReserve(ElectrumTestCase):
         alice_idx = self.alice_channel.add_htlc(htlc).htlc_id
         bob_idx = self.bob_channel.receive_htlc(htlc).htlc_id
         force_state_transition(self.alice_channel, self.bob_channel)
-        self.check_bals(one_bitcoin_in_msat * 3
-                        - self.alice_channel.get_next_fee(LOCAL),
-                        one_bitcoin_in_msat * 5)
+        self.check_bals(one_bitcoin_in_msat * 3, one_bitcoin_in_msat * 5)
+        # The HTLC is still in-flight, so Bob's balance is unchanged and still
+        # below his channel reserve: he cannot send anything.
+        self.assertEqual(0, self.bob_channel.available_to_spend(LOCAL))
         self.bob_channel.settle_htlc(paymentPreimage, bob_idx)
         self.alice_channel.receive_htlc_settle(paymentPreimage, alice_idx)
         force_state_transition(self.alice_channel, self.bob_channel)
-        self.check_bals(one_bitcoin_in_msat * 3
-                        - self.alice_channel.get_next_fee(LOCAL),
-                        one_bitcoin_in_msat * 7)
+        self.check_bals(one_bitcoin_in_msat * 3, one_bitcoin_in_msat * 7)
         # And now let Bob add an HTLC of 1 BTC. This will take Bob's balance
         # all the way down to his channel reserve, but since he is not paying
         # the fee this is okay.
-        htlc = dataclasses.replace(htlc, amount_msat=one_bitcoin_in_msat)
+        self.assertEqual(one_bitcoin_in_msat, self.bob_channel.available_to_spend(LOCAL))
+        htlc = dataclasses.replace(
+            htlc,
+            payment_hash=bitcoin.sha256(32 * b'\x02'),
+            amount_msat=one_bitcoin_in_msat,
+        )
         self.bob_channel.add_htlc(htlc)
         self.alice_channel.receive_htlc(htlc)
         force_state_transition(self.alice_channel, self.bob_channel)
-        self.check_bals(one_bitcoin_in_msat * 3 \
-                        - self.alice_channel.get_next_fee(LOCAL),
-                        one_bitcoin_in_msat * 6)
+        self.check_bals(one_bitcoin_in_msat * 3, one_bitcoin_in_msat * 6)
+        self.assertEqual(0, self.bob_channel.available_to_spend(LOCAL))
 
-    def check_bals(self, amt1, amt2):
-        self.assertEqual(self.alice_channel.available_to_spend(LOCAL), amt1)
-        self.assertEqual(self.bob_channel.available_to_spend(REMOTE), amt1)
-        self.assertEqual(self.alice_channel.available_to_spend(REMOTE), amt2)
-        self.assertEqual(self.bob_channel.available_to_spend(LOCAL), amt2)
+    def check_bals(self, amt1: int, amt2: int) -> None:
+        """Assert Alice's (amt1) and Bob's (amt2) balance in msat, as seen by
+        both channels. HTLCs that are still in-flight count towards neither.
+        """
+        self.assertEqual(amt1, self.alice_channel.balance_minus_outgoing_htlcs(LOCAL))
+        self.assertEqual(amt1, self.bob_channel.balance_minus_outgoing_htlcs(REMOTE))
+        self.assertEqual(amt2, self.alice_channel.balance_minus_outgoing_htlcs(REMOTE))
+        self.assertEqual(amt2, self.bob_channel.balance_minus_outgoing_htlcs(LOCAL))
 
 
 class TestChanReserveNoAnchors(TestChanReserve):
@@ -1082,6 +1091,118 @@ class TestDust(ElectrumTestCase):
 
 class TestDustNoAnchors(TestDust):
     assert TestDust.TEST_ANCHOR_CHANNELS is True
+    TEST_ANCHOR_CHANNELS = False
+
+
+class TestHtlcSpendWitnesses(ElectrumTestCase):
+    """Tests Channel htlc onchain preimage extraction (extract_preimage_from_htlc_txin()).
+
+    Scenario for all tests:
+    two pending htlcs, one per direction (alice->bob, bob->alice), and alice's ctx gets broadcast.
+    The ctx has two htlc outputs, and each spender produces one success and one
+    timeout spend of them: bob (remote wrt the ctx) spends them directly, while alice
+    (owner of the ctx) spends them through 2nd-stage htlc txs.
+    https://github.com/lightning/bolts/blob/444805d12ab98c30006173bb190cd9d6fce9e405/03-transactions.md#offered-htlc-outputs
+    """
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.alice_lnwallet, self.bob_lnwallet = self.create_mock_lnwallet(name="alice"), self.create_mock_lnwallet(name="bob")
+        self.alice_channel, self.bob_channel = create_test_channels(alice_lnwallet=self.alice_lnwallet, bob_lnwallet=self.bob_lnwallet)
+        local_height = self.alice_lnwallet.network.get_local_height()
+
+        # alice offers an htlc to bob
+        self.preimage_ab = os.urandom(32)
+        htlc_ab = self.alice_channel.add_htlc(UpdateAddHtlc(
+            payment_hash=sha256(self.preimage_ab), amount_msat=one_bitcoin_in_msat, cltv_abs=local_height + 100))
+        self.bob_channel.receive_htlc(htlc_ab)
+
+        # bob offers an htlc to alice
+        self.preimage_ba = os.urandom(32)
+        htlc_ba = self.bob_channel.add_htlc(UpdateAddHtlc(
+            payment_hash=sha256(self.preimage_ba), amount_msat=2 * one_bitcoin_in_msat, cltv_abs=local_height + 200))
+        self.alice_channel.receive_htlc(htlc_ba)
+
+        # commit both htlcs, so that alice's ctx contains their two htlc outputs
+        force_state_transition(self.alice_channel, self.bob_channel)
+        self.alice_ctx = tx_from_any(self.alice_channel.force_close_tx().serialize())
+
+    def _get_htlc_spend_txins(self, spender_chan: Channel, ctx: Transaction) -> list[TxInput]:
+        """Signs spender_chan's spends of the htlc outputs of ctx and returns their txins,
+        serialized as they would be seen on-chain.
+        """
+        txins = []
+        _is_local_ctx, sweep_info_dict = spender_chan.get_ctx_sweep_info(ctx)
+        for sweep_info in sweep_info_dict.values():
+            if not isinstance(sweep_info, SweepInfo) or 'htlc' not in sweep_info.name:
+                continue
+            txin = sweep_info.txin
+            # sweep_info.txout is only set for 2nd-stage htlc txs; direct spends claim to a wallet address
+            txout = sweep_info.txout or PartialTxOutput.from_address_and_value(
+                spender_chan.lnworker.wallet.get_receiving_address(), txin.value_sats() - 1000)
+            tx = PartialTransaction.from_io([txin], [txout], locktime=sweep_info.our_cltv_abs, version=2)
+            spender_chan.lnworker.wallet.sign_transaction(tx, password=None, ignore_warnings=True)
+            txins.append(tx_from_any(tx.serialize()).inputs()[0])
+        return txins
+
+    async def test_extract_preimage_direct_htlc_claim(self):
+        """Bob claims the alice->bob htlc on-chain with his preimage.
+        Alice extracts the preimage from his claim."""
+        self.bob_lnwallet.save_preimage(sha256(self.preimage_ab), self.preimage_ab, mark_as_public=True)
+        self.assertIsNone(self.alice_lnwallet.get_preimage(sha256(self.preimage_ab)))
+        # bob's direct spends of alice's ctx:
+        #   preimage claim of htlc_ab: <remotehtlcsig> <payment_preimage> <witness_script>
+        #   timeout spend of htlc_ba:  <remotehtlcsig> <> <witness_script>
+        txins = self._get_htlc_spend_txins(spender_chan=self.bob_channel, ctx=self.alice_ctx)
+        self.assertEqual(2, len(txins))
+        for txin in txins:
+            self.assertEqual(3, len(txin.witness_elements()))
+            self.alice_channel.extract_preimage_from_htlc_txin(txin, is_deeply_mined=True)
+        # alice extracted the preimage from the claim
+        self.assertEqual(self.preimage_ab, self.alice_lnwallet.get_preimage(sha256(self.preimage_ab)))
+
+    async def test_extract_preimage_second_stage_htlc_claim(self):
+        """Alice claims the bob->alice htlc from her own ctx with a 2nd-stage HTLC-success tx.
+        Bob extracts the preimage from it."""
+        self.alice_lnwallet.save_preimage(sha256(self.preimage_ba), self.preimage_ba, mark_as_public=True)
+        self.assertIsNone(self.bob_lnwallet.get_preimage(sha256(self.preimage_ba)))
+        # alice's presigned 2nd-stage spends of her own ctx:
+        #   HTLC-success for htlc_ba: 0 <remotehtlcsig> <localhtlcsig> <payment_preimage> <witness_script>
+        #   HTLC-timeout for htlc_ab: 0 <remotehtlcsig> <localhtlcsig> <> <witness_script>
+        txins = self._get_htlc_spend_txins(spender_chan=self.alice_channel, ctx=self.alice_ctx)
+        self.assertEqual(2, len(txins))
+        for txin in txins:
+            self.assertEqual(5, len(txin.witness_elements()))
+            self.bob_channel.extract_preimage_from_htlc_txin(txin, is_deeply_mined=True)
+        # bob extracted the preimage from the HTLC-success tx
+        self.assertEqual(self.preimage_ba, self.bob_lnwallet.get_preimage(sha256(self.preimage_ba)))
+
+    async def test_no_preimage_in_bobs_justice_spends_of_alices_revoked_ctx(self):
+        """Alice broadcasts her ctx after it got revoked, and bob spends its htlc outputs
+        with justice txs."""
+        # advance the channel state, revoking self.alice_ctx
+        htlc = self.alice_channel.add_htlc(UpdateAddHtlc(
+            payment_hash=sha256(os.urandom(32)),
+            amount_msat=one_bitcoin_in_msat,
+            cltv_abs=self.alice_lnwallet.network.get_local_height() + 300))
+        self.bob_channel.receive_htlc(htlc)
+        force_state_transition(self.alice_channel, self.bob_channel)
+
+        # bob's justice spends of the htlc outputs of alice's revoked ctx:
+        #   <revocation_sig> <revocationpubkey> <witness_script>
+        txins = self._get_htlc_spend_txins(spender_chan=self.bob_channel, ctx=self.alice_ctx)
+        self.assertEqual(2, len(txins))
+        for txin in txins:
+            self.assertEqual(3, len(txin.witness_elements()))
+            self.assertTrue(ecc.ECPubkey.is_pubkey_bytes(txin.witness_elements()[1]))   # revocationpubkey
+            self.bob_channel.extract_preimage_from_htlc_txin(txin, is_deeply_mined=True)
+
+        # the revocationpubkey must not have been mistaken for a preimage (or cause any crash)
+        self.assertEqual({}, self.bob_lnwallet._preimages)
+
+
+class TestHtlcSpendWitnessesSRK(TestHtlcSpendWitnesses):
+    assert TestHtlcSpendWitnesses.TEST_ANCHOR_CHANNELS is True
     TEST_ANCHOR_CHANNELS = False
 
 
