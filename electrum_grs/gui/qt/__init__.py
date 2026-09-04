@@ -331,6 +331,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
         self.build_tray_menu()
         w.warn_if_testnet()
         w.warn_if_watching_only()
+        w.show_startup_warnings()
         return w
 
     def count_wizards_in_progress(func):
@@ -612,7 +613,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
             ret["pyqt.path"] = ", ".join(PyQt6.__path__ or [])
         return ret
 
-    def do_copy(self, text: str, *, title: str = None) -> None:
+    def do_copy(self, text: str, *, title: str | None = None) -> None:
         self.app.clipboard().setText(text)
         message = _("Text copied to Clipboard") if title is None else _("{} copied to Clipboard").format(title)
         # tooltip cannot be displayed immediately when called from a menu; wait 200ms

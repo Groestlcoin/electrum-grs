@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import os
+import socket
 from decimal import Decimal
 from pprint import pformat
 from typing import NamedTuple, Tuple, Dict, Mapping, TYPE_CHECKING, Sequence
@@ -32,6 +33,12 @@ from . import restore_wallet_from_text__for_unittest
 
 if TYPE_CHECKING:
     from . import ElectrumTestCase
+
+
+def find_free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 high_fee_channel = {
@@ -313,6 +320,9 @@ class MockTransport:
     def name(self):
         return self._name
 
+    def is_closing(self) -> bool:
+        return False
+
     async def read_messages(self):
         while True:
             data = await self.queue.get()
@@ -348,11 +358,11 @@ def prepare_invoice(
         *,
         amount_msat=100_000_000,
         include_routing_hints=False,
-        payment_preimage: bytes = None,
-        payment_hash: bytes = None,
+        payment_preimage: bytes | None = None,
+        payment_hash: bytes | None = None,
         invoice_features: LnFeatures = None,
-        min_final_cltv_delta: int = None,
-        expiry: int = None,
+        min_final_cltv_delta: int | None = None,
+        expiry: int | None = None,
 ) -> Tuple[BOLT11Addr, Invoice]:
     amount_btc = amount_msat/Decimal(COIN*1000)
     if payment_preimage is None and not payment_hash:

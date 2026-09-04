@@ -528,6 +528,18 @@ class QEWallet(AuthMixin, QObject, QtEventListener):
             return self.wallet.lnworker.lnpeermgr.num_peers()
         return 0
 
+    @pyqtProperty('QVariantList', notify=dataChanged)
+    def startupWarnings(self):
+        return [{
+            'key': warning.key,
+            'title': warning.title,
+            'message': warning.message,
+        } for warning in self.wallet.get_startup_warnings()]
+
+    @pyqtSlot(str)
+    def acknowledgeWarning(self, key: str):
+        self.wallet.acknowledge_warning(key)
+
     @pyqtSlot()
     def enableLightning(self):
         self.wallet.init_lightning(password=self.password)
@@ -596,7 +608,7 @@ class QEWallet(AuthMixin, QObject, QtEventListener):
             self.broadcast(tx)
 
     # this assumes a 2fa wallet, but there are no other tc_sign_wrapper hooks, so that's ok
-    def on_sign_failed(self, cb: Callable[[], None] = None, error: str = None):
+    def on_sign_failed(self, cb: Callable[[], None] | None = None, error: str | None = None):
         self.otpFailed.emit('error', error)
         if cb:
             cb()
@@ -658,7 +670,7 @@ class QEWallet(AuthMixin, QObject, QtEventListener):
         self.paymentAuthRejected.emit()
 
     @auth_protect(message=_('Pay lightning invoice?'), reject='ln_auth_rejected')
-    def pay_lightning_invoice(self, invoice: 'Invoice', amount_msat: int = None):
+    def pay_lightning_invoice(self, invoice: 'Invoice', amount_msat: int | None = None):
         # at this point, the user confirmed the payment, potentially with an override amount.
         # we save the invoice with the override amount if there was no amount defined in the invoice.
         # (this is similar to what the desktop client does)
@@ -793,6 +805,8 @@ class QEWallet(AuthMixin, QObject, QtEventListener):
     def importChannelBackup(self, backup_str):
         try:
             self.wallet.lnworker.import_channel_backup(backup_str)
+        except UserFacingException as e:
+            self.importChannelBackupFailed.emit(str(e))
         except Exception as e:
             self._logger.debug(f'could not import channel backup: {repr(e)}')
             self.importChannelBackupFailed.emit(f'Failed to import backup:\n\n{str(e)}')

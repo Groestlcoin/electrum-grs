@@ -6,12 +6,20 @@ import asyncio
 
 from electrum_grs import blockchain, util
 from electrum_grs.blockchain import Blockchain
+from electrum_grs.fee_policy import FeeTimeEstimates, FEE_ETA_TARGETS
 from electrum_grs.interface import Interface, ServerAddr
 from electrum_grs.simple_config import SimpleConfig
 from electrum_grs.transaction import Transaction
 from electrum_grs.util import OldTaskGroup
+from electrum_grs.wallet import Abstract_Wallet
 
 from .toyserver import ToyServer
+
+
+class MockDaemon:
+
+    def get_wallets(self) -> dict[str, Abstract_Wallet]:
+        return {}
 
 
 class ToyNetwork:
@@ -31,9 +39,19 @@ class ToyNetwork:
         self.debug = True
         self.bhi_lock = asyncio.Lock()
         self.interface = None  # type: Interface | None
-        self.relay_fee = None  # type: int | None  # sat/kbyte, set from the server on connect
 
-    async def connect(self, server: ToyServer, *, client_name: str = None) -> Interface:
+        self.relay_fee = None  # type: int | None  # sat/kbyte, set from the server on connect
+        self.fee_estimates = FeeTimeEstimates()
+        for target in FEE_ETA_TARGETS[:-1]:
+            self.fee_estimates.set_data(target, 50_000 // target)
+
+        self.daemon = MockDaemon()
+        self.channel_db = None
+        self.path_finder = None
+        self.lngossip = None
+        self.is_proxy_tor = False
+
+    async def connect(self, server: ToyServer, *, client_name: str | None = None) -> Interface:
         """connect to server, and wait until we have synced its headers"""
         assert self.interface is None, "already connected"
         interface = Interface(network=self, server=ServerAddr(host="127.0.0.1", port=server.server_port, protocol="t"))
@@ -61,6 +79,8 @@ class ToyNetwork:
     async def switch_unwanted_fork_interface(self):
         pass
     async def switch_lagging_interface(self):
+        pass
+    def start_gossip(self):
         pass
     def blockchain(self) -> Blockchain:
         return self.interface.blockchain

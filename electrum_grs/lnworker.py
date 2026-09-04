@@ -95,7 +95,7 @@ from .stored_dict import StoredDict
 
 if TYPE_CHECKING:
     from .network import Network
-    from .wallet import Abstract_Wallet
+    from .wallet import Abstract_Wallet, WalletWarning
     from .channel_db import ChannelDB
     from .simple_config import SimpleConfig
 
@@ -1054,6 +1054,9 @@ class LNWallet(Logger):
         for name in ["onchain_channel_backups", "imported_channel_backups"]:
             channel_backups = self.db.get_dict(name)
             for channel_id, storage in channel_backups.items():
+                if isinstance(storage, str):
+                    storage = ImportedChannelBackupStorage.from_bytes(bytes.fromhex(storage))
+                assert isinstance(storage, (OnchainChannelBackupStorage, ImportedChannelBackupStorage))
                 self._channel_backups[bfh(channel_id)] = cb = ChannelBackup(storage, lnworker=self)
                 self.wallet.set_reserved_addresses_for_chan(cb, reserved=True)
 
@@ -1064,7 +1067,7 @@ class LNWallet(Logger):
 
         # detect inflight payments
         self.inflight_payments = set()  # type: set[str]  # (not persisted) keys of invoices that are in PR_INFLIGHT state
-        for payment_hash in self.get_payments(status='inflight').keys():
+        for payment_hash in self.get_payments(status='inflight', direction=SENT).keys():
             self.set_invoice_status(payment_hash.hex(), PR_INFLIGHT)
 
         # payment forwarding
@@ -1122,6 +1125,45 @@ class LNWallet(Logger):
         """Returns True if any active channel is an anchor channel."""
         return any(chan.has_anchors() and not chan.is_closed()
                    for chan in self.channels.values())
+
+    def get_lightning_startup_warnings(self) -> Sequence['WalletWarning']:
+        from .wallet import WalletWarning
+        warnings = []
+        if any(isinstance(cb.cb, ImportedChannelBackupStorage) and cb.cb.backup_version == 0 for cb in self.channel_backups.values()):
+            warnings.append(WalletWarning(
+                key='ln_chan_backup_pre_v1_gh-8536',
+                title=_('Outdated channel backups') + ' [gh-8536]',
+                show_once=False,  # show on every startup
+                message=''.join([
+                    _("This wallet contains old (v0) channel backups that can only be used to recover channel funds "
+                      "in some scenarios. They were exported with an older version of Electrum."), ' ',
+                    _("Please import new backups, exported by the wallet these channels belong to."),
+                ])))
+        if not self.has_deterministic_node_id() and self.has_anchor_channels():
+            # backups exported before we started storing the payment_basepoint privkey
+            # (backup v3) cannot sweep the to_remote output of an anchor channel
+            warnings.append(WalletWarning(
+                key='ln_chan_backups_pre_v3_gh-10852-1',
+                title=_('Outdated channel backups') + ' [gh-10852-1]',
+                show_once=True,
+                message=''.join([
+                    _("The Lightning channels of this wallet cannot be recovered from seed."), ' ',
+                    _("Channel backups that were exported with an older version of Electrum "
+                      "cannot be used to request a force close of these channels."), '\n\n',
+                    _("Please export new channel backups and store them in a safe place."),
+                ])))
+        if any(not cb.can_sweep_their_ctx_to_remote() for cb in self.channel_backups.values()):
+            warnings.append(WalletWarning(
+                key='ln_chan_backups_pre_v3_gh-10852-2',
+                title=_('Unusable channel backups') + ' [gh-10852-2]',
+                show_once=False,  # show on every startup
+                message=''.join([
+                    _("This wallet contains old (v2) channel backups that cannot be used to request a force close, "
+                      "because they were exported with an older version of Electrum."), ' ',
+                    _("Please import new backups, exported by the wallet these channels belong to."), '\n\n',
+                    _("If you have lost access to that wallet, please open an issue on GitHub."),
+                ])))
+        return warnings
 
     @property
     def features(self) -> 'LnFeatures':
@@ -1261,10 +1303,14 @@ class LNWallet(Logger):
                 for peer in self.lnpeermgr.peers.values():
                     await group.spawn(peer.received_htlc_removed_event.wait())
 
-    def get_payments(self, *, status=None) -> Mapping[bytes, List[HTLCWithStatus]]:
+    def get_payments(
+        self, *,
+        status: Optional[str] = None,
+        direction: Optional[lnutil.Direction] = None,
+    ) -> Mapping[bytes, List[HTLCWithStatus]]:
         out = defaultdict(list)
         for chan in self.channels.values():
-            d = chan.get_payments(status=status)
+            d = chan.get_payments(status=status, direction=direction)
             for payment_hash, plist in d.items():
                 out[payment_hash] += plist
         return out
@@ -1703,7 +1749,7 @@ class LNWallet(Logger):
         channel_type: ChannelType,
         multisig_funding_keypair: Optional[Keypair],  # if None, will get derived from channel_seed
         peer_features: LnFeatures,
-        channel_seed: bytes = None,
+        channel_seed: bytes | None = None,
     ) -> LocalConfig:
         if channel_seed is None:
             channel_seed = os.urandom(32)
@@ -1717,15 +1763,15 @@ class LNWallet(Logger):
         channel_type.check_combinations()  # test if raises
         if channel_type & ChannelType.OPTION_ANCHORS:  # anchors
             static_payment_key = self.static_payment_key
-            static_remotekey = None
+            payment_basepoint = None
         else:  # static_remotekey
             assert channel_type & channel_type.OPTION_STATIC_REMOTEKEY
             assert self.config.TEST_LN_OPEN_SRK_CHANNELS
             wallet = self.wallet
             assert wallet.txin_type == 'p2wpkh'
-            addr = wallet.get_new_sweep_address_for_channel()
+            addr = wallet.get_new_sweep_address()
             static_payment_key = None
-            static_remotekey = bytes.fromhex(wallet.get_public_key(addr))
+            payment_basepoint = bytes.fromhex(wallet.get_public_key(addr))
 
         if multisig_funding_keypair:
             for chan in self.channels.values():  # check against all chans of lnworker, for sanity
@@ -1744,7 +1790,8 @@ class LNWallet(Logger):
         max_htlc_value_in_flight_msat = self.network.config.LIGHTNING_MAX_HTLC_VALUE_IN_FLIGHT_MSAT or funding_sat * 1000
         local_config = LocalConfig.from_seed(
             channel_seed=channel_seed,
-            static_remotekey=static_remotekey,
+            channel_type=channel_type,
+            payment_basepoint=payment_basepoint,
             static_payment_key=static_payment_key,
             multisig_key=multisig_funding_keypair,
             upfront_shutdown_script=upfront_shutdown_script,
@@ -1837,7 +1884,7 @@ class LNWallet(Logger):
             funding_sat: int,
             push_amt_sat: int,
             public: bool = False,
-            password: str = None,
+            password: str | None = None,
     ) -> Tuple[Channel, PartialTransaction]:
 
         fut = asyncio.run_coroutine_threadsafe(self.lnpeermgr.add_peer(connect_str), get_asyncio_loop())
@@ -1884,8 +1931,8 @@ class LNWallet(Logger):
     @log_exceptions
     async def pay_invoice(
             self, invoice: Invoice, *,
-            amount_msat: int = None,  # to overwrite amt in invoice
-            attempts: int = None,  # used only in unit tests
+            amount_msat: int | None = None,  # to overwrite amt in invoice
+            attempts: int | None = None,  # used only in unit tests
             full_path: LNPaymentPath = None,
             channels: Optional[Sequence[Channel]] = None,  # my own direct channels
             budget: Optional[PaymentFeeBudget] = None,  # to limit max fee
@@ -1971,12 +2018,12 @@ class LNWallet(Logger):
             min_final_cltv_delta: int,
             r_tags,
             invoice_features: int,
-            attempts: int = None,
+            attempts: int | None = None,
             full_path: LNPaymentPath = None,
             fwd_trampoline_onion: OnionPacket = None,
             budget: PaymentFeeBudget,
             channels: Optional[Sequence[Channel]] = None,
-            fw_payment_key: str = None,  # for forwarding
+            fw_payment_key: str | None = None,  # for forwarding
     ) -> None:
         """
         Can raise PaymentFailure, ChannelDBNotLoaded,
@@ -2129,7 +2176,7 @@ class LNWallet(Logger):
             sent_htlc_info: SentHtlcInfo,
             min_final_cltv_delta: int,
             trampoline_onion: Optional[OnionPacket] = None,
-            fw_payment_key: str = None,
+            fw_payment_key: str | None = None,
     ) -> None:
         """Sends a single HTLC."""
         shi = sent_htlc_info
@@ -2297,7 +2344,7 @@ class LNWallet(Logger):
             except Exception:
                 return None
 
-    def _check_bolt11_invoice(self, bolt11_invoice: str, *, amount_msat: int = None, max_min_final_cltv_delta=NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE) -> BOLT11Addr:
+    def _check_bolt11_invoice(self, bolt11_invoice: str, *, amount_msat: int | None = None, max_min_final_cltv_delta=NBLOCK_CLTV_DELTA_TOO_FAR_INTO_FUTURE) -> BOLT11Addr:
         """Parses and validates a bolt11 invoice str into a BOLT11Addr.
         Includes pre-payment checks external to the parser.
         """
@@ -3733,6 +3780,10 @@ class LNWallet(Logger):
         assert chan.is_static_remotekey_enabled()
         peer_addresses = list(chan.get_peer_addresses())
         peer_addr = peer_addresses[0] if peer_addresses else None
+        if chan.has_anchors():
+            local_payment_basepoint = chan.config[LOCAL].payment_basepoint.privkey
+        else:
+            local_payment_basepoint = chan.config[LOCAL].payment_basepoint.pubkey
         return ImportedChannelBackupStorage(
             node_id=chan.node_id,
             privkey=self.node_keypair.privkey,
@@ -3743,11 +3794,12 @@ class LNWallet(Logger):
             port=peer_addr.port if peer_addr else 0,
             is_initiator=chan.constraints.is_initiator,
             channel_seed=chan.config[LOCAL].channel_seed,
+            channel_type=int(chan.storage['channel_type']),
             local_delay=chan.config[LOCAL].to_self_delay,
             remote_delay=chan.config[REMOTE].to_self_delay,
             remote_revocation_pubkey=chan.config[REMOTE].revocation_basepoint.pubkey,
             remote_payment_pubkey=chan.config[REMOTE].payment_basepoint.pubkey,
-            local_payment_pubkey=chan.config[LOCAL].payment_basepoint.pubkey,
+            local_payment_basepoint=local_payment_basepoint,
             multisig_funding_privkey=chan.config[LOCAL].multisig_key.privkey,
         )
 
@@ -3794,13 +3846,17 @@ class LNWallet(Logger):
 
     def import_channel_backup(self, data):
         xpub = self.wallet.get_fingerprint()
-        cb_storage = ImportedChannelBackupStorage.from_encrypted_str(data, password=xpub)
+        cb_blob = ImportedChannelBackupStorage.decrypt_encrypted_str(data, password=xpub)
+        cb_storage = ImportedChannelBackupStorage.from_bytes(cb_blob)
         channel_id = cb_storage.channel_id()
         if channel_id.hex() in self.db.get_dict("channels"):
             raise Exception('Channel already in wallet')
+        if existing_backup := self._channel_backups.get(channel_id):
+            if existing_backup.is_imported and existing_backup.cb.backup_version > cb_storage.backup_version:
+                raise util.UserFacingException(_("You already have a newer version of this backup in your wallet."))
         self.logger.info(f'importing channel backup: {channel_id.hex()}')
         d = self.db.get_dict("imported_channel_backups")
-        d[channel_id.hex()] = cb_storage
+        d[channel_id.hex()] = cb_blob.hex()
         with self.lock:
             cb = ChannelBackup(cb_storage, lnworker=self)
             self._channel_backups[channel_id] = cb
@@ -3808,6 +3864,15 @@ class LNWallet(Logger):
         self.wallet.save_db()
         util.trigger_callback('channels_updated', self.wallet)
         self.lnwatcher.add_channel(cb)
+        if not cb.can_sweep_their_ctx_to_remote():
+            # the user has lost their channel state and cannot locally force close. If they'd request a remote fclose
+            # they wouldn't be able to claim their to_remote output. However, they could collaborate with the channel
+            # counterparty (likely one of the hardcoded trampolines) and manually construct a transaction to spend
+            # the channel funding UTXO as they do have the multisig key in their backup ("manual collaborative close").
+            raise util.UserFacingException(
+                _("The channel backup you imported cannot be used to request a force close. Please generate a new backup. "
+                  "If you lost your wallet data, please open an issue on GitHub.")
+            )
 
     def has_conflicting_backup_with(self, remote_node_id: bytes):
         """ Returns whether we have an active channel with this node on another device, using same local node id. """
@@ -4069,9 +4134,6 @@ class LNWallet(Logger):
         if htlc.amount_msat - next_amount_msat_htlc < forwarding_fees:
             data = next_amount_msat_htlc.to_bytes(8, byteorder="big") + outgoing_chan_upd_message
             raise OnionRoutingFailure(code=OnionFailureCode.FEE_INSUFFICIENT, data=data)
-        if self._maybe_refuse_to_forward_htlc_that_corresponds_to_payreq_we_created(htlc.payment_hash):
-            log_fail_reason(f"RHASH corresponds to payreq we created")
-            raise OnionRoutingFailure(code=OnionFailureCode.TEMPORARY_NODE_FAILURE, data=b'')
         self.logger.info(
             f"maybe_forward_htlc. will forward HTLC: inc_chan={incoming_chan.short_channel_id}. inc_htlc={str(htlc)}. "
             f"next_chan={next_chan.get_id_for_log()}.")
@@ -4133,12 +4195,6 @@ class LNWallet(Logger):
         except Exception as e:
             self.logger.exception('')
             raise OnionRoutingFailure(code=OnionFailureCode.INVALID_ONION_PAYLOAD, data=b'\x00\x00\x00')
-
-        if self._maybe_refuse_to_forward_htlc_that_corresponds_to_payreq_we_created(payment_hash):
-            self.logger.debug(
-                f"maybe_forward_trampoline. will FAIL HTLC(s). "
-                f"RHASH corresponds to payreq we created. {payment_hash.hex()=}")
-            raise OnionRoutingFailure(code=OnionFailureCode.TEMPORARY_NODE_FAILURE, data=b'')
 
         # these are the fee/cltv paid by the sender
         # pay_to_node will raise if they are not sufficient
@@ -4236,7 +4292,7 @@ class LNWallet(Logger):
                 data = b''
             raise OnionRoutingFailure(code=OnionFailureCode.UNKNOWN_NEXT_PEER, data=data)
 
-    def _maybe_refuse_to_forward_htlc_that_corresponds_to_payreq_we_created(self, payment_hash: bytes) -> bool:
+    def maybe_refuse_to_forward_htlc_that_corresponds_to_payreq_we_created(self, payment_hash: bytes) -> bool:
         """Returns True if the HTLC should be failed.
         We must not forward HTLCs with a matching payment_hash to a payment request we created.
         Example attack:

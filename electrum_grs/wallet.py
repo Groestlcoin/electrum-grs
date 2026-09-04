@@ -76,7 +76,7 @@ from .address_synchronizer import (
     AddressSynchronizer, TX_HEIGHT_LOCAL, TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_FUTURE,
     TX_TIMESTAMP_INF
 )
-from .invoices import BaseInvoice, Invoice, Request, PR_PAID, PR_UNPAID, PR_EXPIRED, PR_UNCONFIRMED
+from .invoices import BaseInvoice, Invoice, Request, PR_PAID, PR_UNPAID, PR_EXPIRED, PR_UNCONFIRMED, PR_INFLIGHT
 from .contacts import Contacts
 from .mnemonic import Mnemonic
 from .lnworker import LNWallet
@@ -273,8 +273,8 @@ class TxSighashDanger:
         self,
         *,
         risk_level: TxSighashRiskLevel = TxSighashRiskLevel.SAFE,
-        short_message: str = None,
-        messages: List[str] = None,
+        short_message: str | None = None,
+        messages: List[str] | None = None,
     ):
         self.risk_level = risk_level
         self.short_message = short_message
@@ -377,6 +377,13 @@ class TxWalletDetails(NamedTuple):
     can_remove: bool  # whether user should be allowed to delete tx
     is_lightning_funding_tx: bool
     is_related_to_wallet: bool
+
+
+class WalletWarning(NamedTuple):
+    key: str      # stable identifier, used to remember that the user has seen this warning
+    title: str
+    message: str
+    show_once: bool  # if True acceptance is persisted and the warning won't be shown again
 
 
 @dataclass(kw_only=True, slots=True, frozen=True)
@@ -511,11 +518,27 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         if self.lnworker:
             channel_backups = new_db.get_dict('imported_channel_backups')
             for chan_id, chan in self.lnworker.channels.items():
-                channel_backups[chan_id.hex()] = self.lnworker.create_channel_backup(chan_id)
+                channel_backups[chan_id.hex()] = self.lnworker.create_channel_backup(chan_id).to_bytes().hex()
             new_db.put('channels', None)
         new_db.set_modified(True)
         new_db.write()
         return new_path
+
+    def get_startup_warnings(self) -> Sequence[WalletWarning]:
+        """Warnings that should be shown to the user once, when the wallet is opened in a GUI."""
+        warnings = []  # type: List[WalletWarning]
+        if self.lnworker:
+            warnings += self.lnworker.get_lightning_startup_warnings()
+        acknowledged = self.db.get('acknowledged_warnings', [])
+        return [warning for warning in warnings if warning.key not in acknowledged or warning.show_once is False]
+
+    def acknowledge_warning(self, key: str) -> None:
+        """Remember that the user has seen this warning, so that it is not shown again."""
+        acknowledged = self.db.get('acknowledged_warnings', [])
+        if key in acknowledged:
+            return
+        self.db.put('acknowledged_warnings', list(acknowledged) + [key])
+        self.save_db()
 
     def has_lightning(self) -> bool:
         return bool(self.lnworker)
@@ -748,7 +771,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             else:
                 self._labels[key] = value
 
-    def set_label(self, name: str, text: str = None) -> bool:
+    def set_label(self, name: str, text: str | None = None) -> bool:
         if not name:
             return False
         changed = False
@@ -1896,7 +1919,11 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             return addrs[0]
         return None
 
-    def get_new_sweep_address_for_channel(self) -> str:
+    def get_new_sweep_address(self) -> str:
+        """Returns an ismine address to sweep funds to.
+        NOTE: this ignores the 'use_change' setting, as the funds we are sweeping are not
+              in the wallet yet, so there is no "sending address" we could send them back to.
+        """
         addrs = self._get_change_addresses_we_can_use_now(allow_reuse=True)
         if addrs:
             return addrs[0]
@@ -1980,7 +2007,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             outputs: List[PartialTxOutput],
             inputs: Optional[List[PartialTxInput]] = None,
             fee_policy: FeePolicy,
-            change_addr: str = None,
+            change_addr: str | None = None,
             is_sweep: bool = False,  # used by Wallet_2fa subclass
             rbf: bool = True,
             BIP69_sort: Optional[bool] = True,
@@ -2071,6 +2098,13 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 # even if the option use multiple change outputs is enabled there should be only
                 # one change address if there are 0 txos as this is a sweep tx, or if we want to swap change to ln
                 change_addrs = change_addrs[0:1]
+            if not change_addrs:
+                # We have no change address, e.g. because 'use_change' is disabled. The coin chooser
+                # then sends the change back to the address of the first input, which is only sane if
+                # all inputs are ismine. That is not the case when sweeping (e.g. a lightning ctx
+                # output or a swap claim output), and not guaranteed when batching sweeps with payments.
+                if len(txo) == 0 or not all(self.is_mine(self.adb.get_txin_address(txin)) for txin in txi):
+                    change_addrs = [self.get_new_sweep_address()]
             tx = coin_chooser.make_tx(
                 coins=coins,
                 inputs=txi,
@@ -2643,7 +2677,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             self,
             txin: PartialTxInput,
             *,
-            address: str = None,
+            address: str | None = None,
     ) -> None:
         # - We prefer to include UTXO (full tx), even for segwit inputs (see #6198).
         # - For witness v0 inputs, we include *both* UTXO and WITNESS_UTXO. UTXO is a strict superset,
@@ -3098,7 +3132,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         self._receive_requests.pop(request_id, None)
         if addr := req.get_address():
             self._requests_addr_to_key[addr].discard(request_id)
-        if req.is_lightning() and self.lnworker:
+        if req.is_lightning() and self.lnworker \
+                and self.lnworker.get_invoice_status(req) != PR_PAID:
             self.lnworker.delete_payment_info(req.rhash, direction=RECEIVED)
         if write_to_disk:
             self.save_db()
@@ -3109,7 +3144,10 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         if inv is None:
             return
         self._paid_invoice_keys_cache.discard(invoice_id)
-        if inv.is_lightning() and self.lnworker:
+        if inv.is_lightning() and self.lnworker \
+                and self.lnworker.get_invoice_status(inv) not in (PR_PAID, PR_INFLIGHT):
+            # if an invoice was paid we need the PaymentInfo for the history and don't delete it.
+            # if it is still inflight and the payment fails later on we leak it and never delete it.
             self.lnworker.delete_payment_info(inv.rhash, direction=SENT)
         if write_to_disk:
             self.save_db()

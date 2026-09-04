@@ -189,7 +189,7 @@ class Peer(Logger, EventListener):
             await self.transport.handshake()
         self.logger.info(f"handshake done for {self.transport.peer_addr or self.pubkey.hex()}")
         features = self.features.for_init_message()
-        flen = features.min_len()
+        flen = lnutil.int_min_byte_len(features)
         self.send_message(
             "init", gflen=0, flen=flen,
             features=features,
@@ -225,7 +225,10 @@ class Peer(Logger, EventListener):
         if time.time() - self.last_message_time > 30:
             self.send_message('ping', num_pong_bytes=4, byteslen=4)
             self.pong_event.clear()
-            await self.pong_event.wait()
+            try:
+                await util.wait_for2(self.pong_event.wait(), LN_P2P_NETWORK_TIMEOUT)
+            except asyncio.TimeoutError as e:
+                raise GracefulDisconnect("pong timed out") from e
 
     async def _process_message(self, message: bytes) -> None:
         try:
@@ -327,7 +330,7 @@ class Peer(Logger, EventListener):
             return
         raise GracefulDisconnect
 
-    def send_warning(self, channel_id: bytes, message: str = None, *, close_connection=False):
+    def send_warning(self, channel_id: bytes, message: str | None = None, *, close_connection=False):
         """Sends a warning and disconnects if close_connection.
 
         Note:
@@ -346,7 +349,7 @@ class Peer(Logger, EventListener):
         if close_connection:
             raise GracefulDisconnect
 
-    def send_error(self, channel_id: bytes, message: str = None, *, force_close_channel=False):
+    def send_error(self, channel_id: bytes, message: str | None = None, *, force_close_channel=False):
         """Sends an error message and force closes the channel.
 
         Note:
@@ -566,12 +569,20 @@ class Peer(Logger, EventListener):
                 await util.wait_for2(self.initialized, LN_P2P_NETWORK_TIMEOUT)
             except Exception as e:
                 raise GracefulDisconnect(f"Failed to initialize: {e!r}") from e
+            await group.spawn(self._monitor_connection())
             await group.spawn(self._query_gossip())
             await group.spawn(self._process_gossip())
             await group.spawn(self._send_own_gossip())
             await group.spawn(self._forward_gossip())
             if self.network.lngossip != self.lnworker:
                 await group.spawn(self.htlc_switch())
+
+    async def _monitor_connection(self):
+        # this mirrors Interface.monitor_connection.
+        while True:
+            await asyncio.sleep(1)
+            if self.transport.is_closing():
+                raise GracefulDisconnect('transport was closed')
 
     async def _process_gossip(self):
         while True:
@@ -982,7 +993,7 @@ class Peer(Logger, EventListener):
             public: bool,
             zeroconf: bool = False,
             temp_channel_id: bytes,
-            opening_fee: int = None,
+            opening_fee: int | None = None,
     ) -> Tuple[Channel, 'PartialTransaction']:
         """Implements the channel opening flow.
 
@@ -1030,7 +1041,7 @@ class Peer(Logger, EventListener):
         # if option_channel_type is negotiated: MUST set channel_type
         # if it includes channel_type: MUST set it to a defined type representing the type it wants.
         open_channel_tlvs['channel_type'] = {
-            'type': our_channel_type.to_bytes_minimal()
+            'type': lnutil.int_to_bytes_minimal(our_channel_type)
         }
 
         if our_channel_type & ChannelType.OPTION_ANCHORS:
@@ -1387,7 +1398,7 @@ class Peer(Logger, EventListener):
                 'shutdown_scriptpubkey': local_config.upfront_shutdown_script
             },
             'channel_type': {
-                'type': channel_type.to_bytes_minimal(),
+                'type': lnutil.int_to_bytes_minimal(channel_type),
             },
         }
 
@@ -1840,7 +1851,7 @@ class Peer(Logger, EventListener):
         timestamp = int(time.time())
         node_id = privkey_to_pubkey(self.privkey)
         features = self.features.for_node_announcement()
-        flen = features.min_len()
+        flen = lnutil.int_min_byte_len(features)
         rgb_color = bytes.fromhex(color_hex)
         alias = bytes(alias, 'utf8')
         alias += bytes(32 - len(alias))
@@ -2189,7 +2200,7 @@ class Peer(Logger, EventListener):
         chan: Channel,
         htlc: UpdateAddHtlc,
         processed_onion: ProcessedOnionPacket,
-        outer_onion_payment_secret: bytes = None,  # used to group trampoline htlcs for forwarding
+        outer_onion_payment_secret: bytes | None = None,  # used to group trampoline htlcs for forwarding
     ) -> str:
         """
         Does additional checks on the incoming htlc and return the payment key if the tests pass,
@@ -2216,6 +2227,10 @@ class Peer(Logger, EventListener):
             if not fw_enabled:
                 _log_fail_reason("forwarding is disabled")
                 raise OnionRoutingFailure(code=OnionFailureCode.PERMANENT_CHANNEL_FAILURE, data=b'')
+            # we must not forward an htlc whose payment_hash matches a payment request we created
+            if self.lnworker.maybe_refuse_to_forward_htlc_that_corresponds_to_payreq_we_created(payment_hash):
+                _log_fail_reason(f"RHASH corresponds to payreq we created")
+                raise OnionRoutingFailure(code=OnionFailureCode.TEMPORARY_NODE_FAILURE, data=b'')
             if outer_onion_payment_secret:
                 # this is a trampoline forwarding htlc, multiple incoming trampoline htlcs can be collected
                 payment_key = (payment_hash + outer_onion_payment_secret).hex()
@@ -2257,17 +2272,20 @@ class Peer(Logger, EventListener):
 
             # compare trampoline onion against outer onion according to:
             # https://github.com/lightning/bolts/blob/9938ab3d6160a3ba91f3b0e132858ab14bfe4f81/04-onion-routing.md?plain=1#L547-L553
-            if trampoline_onion.are_we_final:
-                try:
-                    assert not processed_onion.outgoing_cltv_value < trampoline_onion.outgoing_cltv_value
-                    is_mpp = processed_onion.total_msat > processed_onion.amt_to_forward
-                    if is_mpp:
-                        assert not processed_onion.total_msat < trampoline_onion.amt_to_forward
-                    else:
-                        assert not processed_onion.amt_to_forward < trampoline_onion.amt_to_forward
-                except AssertionError:
-                    _log_fail_reason(f'incorrect trampoline onion {processed_onion=}\n{trampoline_onion=}')
-                    raise OnionRoutingFailure(code=OnionFailureCode.INVALID_ONION_PAYLOAD, data=b'\x00\x00\x00')
+            # note: The spec splits the amount check into an mpp and a non-mpp case, but the two are
+            #       the same comparison: a sender not using mpp must set total_msat equal to
+            #       amt_to_forward (L406). The spec also states the cltv/amount requirements
+            #       for the final node only, but we apply them when we are asked to forward as well.
+            try:
+                # note: the inner payload is attacker-chosen, these might be missing (None)
+                assert (inner_amt_to_forward := trampoline_onion.amt_to_forward) is not None
+                assert (inner_cltv_abs := trampoline_onion.outgoing_cltv_value) is not None
+                assert processed_onion.total_msat >= processed_onion.amt_to_forward  # equal in case of non-mpp
+                assert processed_onion.total_msat >= inner_amt_to_forward
+                assert processed_onion.outgoing_cltv_value >= inner_cltv_abs
+            except AssertionError:
+                _log_fail_reason(f'incorrect trampoline onion {processed_onion=}\n{trampoline_onion=}')
+                raise OnionRoutingFailure(code=OnionFailureCode.INVALID_ONION_PAYLOAD, data=b'\x00\x00\x00')
 
             return self._check_unfulfilled_htlc(
                 chan=chan,
