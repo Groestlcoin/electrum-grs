@@ -37,6 +37,7 @@ import groestlcoin_hash
 from .util import assert_bytes, InvalidPassword, to_bytes, to_string, WalletFileException, versiontuple
 from .i18n import _
 from .logging import get_logger
+from . import crandom
 
 _logger = get_logger(__name__)
 
@@ -180,7 +181,7 @@ def aes_decrypt_with_iv(key: bytes, iv: bytes, data: bytes) -> bytes:
 
 def EncodeAES_bytes(secret: bytes, msg: bytes) -> bytes:
     assert_bytes(msg)
-    iv = bytes(os.urandom(16))
+    iv = crandom.get_rand_bytes(16)
     ct = aes_encrypt_with_iv(secret, iv, msg)
     return iv + ct
 

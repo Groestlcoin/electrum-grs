@@ -19,6 +19,7 @@ from electrum_grs.bitcoin import (public_key_to_p2pkh, address_from_private_key,
                               taproot_tweak_pubkey, taproot_tweak_seckey, taproot_output_script,
                               control_block_for_taproot_script_spend)
 from electrum_grs import bip32
+from electrum_grs import crandom
 from electrum_grs import segwit_addr
 from electrum_grs.segwit_addr import DecodedBech32
 from electrum_grs.bip32 import (BIP32Node, convert_bip32_intpath_to_strpath,
@@ -27,7 +28,7 @@ from electrum_grs.bip32 import (BIP32Node, convert_bip32_intpath_to_strpath,
                             normalize_bip32_derivation, is_all_public_derivation)
 from electrum_grs.crypto import sha256d, SUPPORTED_PW_HASH_VERSIONS
 from electrum_grs import crypto, constants
-from electrum_grs.util import bfh, InvalidPassword, randrange
+from electrum_grs.util import bfh, InvalidPassword
 from electrum_grs.storage import WalletStorage
 from electrum_grs.keystore import xtype_from_derivation
 
@@ -172,7 +173,7 @@ class Test_bitcoin(ElectrumTestCase):
     def _do_test_crypto(self, message: bytes):
         G = ecc.GENERATOR
         _r  = G.order()
-        pvk = randrange(_r)
+        pvk = crandom.get_rand_below(_r - 1) + 1
 
         Pub = pvk*G
         pubkey_c = Pub.get_public_key_bytes(True)

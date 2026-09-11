@@ -25,6 +25,7 @@ from .transaction import (
     Transaction, PartialTransaction, PartialTxInput, TxOutpoint, PartialTxOutput, opcodes, OPPushDataPubkey
 )
 from . import bitcoin, crypto, transaction, descriptor, segwit_addr
+from . import crandom
 from .bitcoin import redeem_script_to_address, address_to_script, construct_witness, \
     construct_script, NLOCKTIME_BLOCKHEIGHT_MAX
 from .i18n import _
@@ -259,6 +260,7 @@ class LocalConfig(ChannelConfig):
         payment_basepoint = kwargs.pop('payment_basepoint', None)  # type: bytes | None
         assert bool(static_payment_key) + bool(payment_basepoint) <= 1
         if static_payment_key:
+            assert channel_type & ChannelType.OPTION_ANCHORS
             # We derive the payment_basepoint from a static secret (derived from
             # the wallet seed) and a public nonce that is revealed
             # when the funding transaction is spent. This way we can restore the
@@ -278,6 +280,7 @@ class LocalConfig(ChannelConfig):
         else:
             # v0 channel backup for srk channel: the real basepoint is a wallet pubkey that is
             # not part of the backup and cannot be derived, see: https://github.com/spesmilo/electrum/pull/8536
+            assert channel_type == ChannelType.OPTION_STATIC_REMOTEKEY
             kwargs['payment_basepoint'] = OnlyPubkeyKeypair(None)
 
         assert ecc.ECPubkey.is_pubkey_bytes(kwargs['payment_basepoint'].pubkey)
@@ -751,6 +754,7 @@ def derive_blinded_privkey(basepoint_secret: bytes, per_commitment_secret: bytes
 
 
 def derive_payment_basepoint(static_payment_secret: bytes, funding_pubkey: bytes) -> Keypair:
+    """(only for anchors channels)"""
     assert isinstance(static_payment_secret, bytes)
     assert isinstance(funding_pubkey, bytes)
     payment_basepoint = ecc.ECPrivkey(sha256(static_payment_secret + funding_pubkey))
@@ -766,6 +770,7 @@ def derive_multisig_funding_key_if_we_opened(
     remote_node_id_or_prefix: bytes,
     nlocktime: int,
 ) -> Keypair:
+    """(only for anchors channels)"""
     from .lnworker import NODE_ID_PREFIX_LEN
     assert isinstance(funding_root_secret, bytes)
     assert len(funding_root_secret) == 32
@@ -790,6 +795,7 @@ def derive_multisig_funding_key_if_they_opened(
     remote_node_id_or_prefix: bytes,
     remote_funding_pubkey: bytes,
 ) -> Keypair:
+    """(only for anchors channels)"""
     from .lnworker import NODE_ID_PREFIX_LEN
     assert isinstance(funding_root_secret, bytes)
     assert len(funding_root_secret) == 32
@@ -2007,8 +2013,7 @@ def generate_keypair(node: BIP32Node, key_family: LnKeyFamily) -> Keypair:
 
 
 def generate_random_keypair() -> Keypair:
-    import secrets
-    k = secrets.token_bytes(32)
+    k = crandom.get_rand_bytes(32)
     cK = ecc.ECPrivkey(k).get_public_key_bytes()
     return Keypair(cK, k)
 

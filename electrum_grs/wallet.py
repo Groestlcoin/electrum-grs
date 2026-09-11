@@ -48,6 +48,7 @@ from aiorpcx import ignore_after, run_in_thread
 
 from . import util, keystore, transaction, bitcoin, coinchooser, bip32, descriptor
 from . import constants
+from . import crandom
 from . import crypto
 from .i18n import _
 from .bip32 import BIP32Node, convert_bip32_intpath_to_strpath, convert_bip32_strpath_to_intpath
@@ -578,7 +579,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             # bip39 seeds and imported zprv.
             # also, watching-only and hw wallets, if the user disables anchors.
             # todo: we should kill that branch, it is a footgun.
-            seed = os.urandom(32)
+            seed = crandom.get_rand_bytes(32)
             node = BIP32Node.from_rootseed(seed, xtype='standard')
             ln_xprv = node.to_xprv()
             self.db.put('lightning_privkey2', ln_xprv)
@@ -2736,7 +2737,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             txin.script_descriptor = desc
         txin.is_mine = True
         self._add_txinout_derivation_info(txin, address, only_der_suffix=only_der_suffix)
-        txin.block_height = self.adb.get_tx_height(txin.prevout.txid.hex()).height()
+        txin.set_mined_info(self.adb.get_tx_height(txin.prevout.txid.hex()))
 
     def has_support_for_slip_19_ownership_proofs(self) -> bool:
         return False
@@ -3606,12 +3607,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         lightning_online = self.lnworker and self.lnworker.lnpeermgr.num_peers() > 0
         num_sats_can_receive = self.lnworker.num_sats_can_receive() if self.lnworker else 0
         can_receive_lightning = self.lnworker and num_sats_can_receive > 0 and amount_sat <= num_sats_can_receive
-        try:
-            zeroconf_nodeid = extract_nodeid(self.config.ZEROCONF_TRUSTED_NODE)[0]
-        except Exception:
-            zeroconf_nodeid = None
-        can_get_zeroconf_channel = (self.lnworker and self.config.OPEN_ZEROCONF_CHANNELS
-                                    and self.lnworker.lnpeermgr.get_peer_by_pubkey(zeroconf_nodeid) is not None)
+        can_get_zeroconf_channel = self.lnworker and self.lnworker.can_get_zeroconf_channel()
         status = self.get_invoice_status(req)
 
         if status == PR_EXPIRED:

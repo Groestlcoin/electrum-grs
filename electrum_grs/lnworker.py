@@ -35,6 +35,7 @@ from .channel_db import UpdateStatus, ChannelDBNotLoaded, get_mychannel_info, ge
 
 from . import constants, util, lnutil
 from . import bitcoin
+from . import crandom
 from .util import (
     profiler, OldTaskGroup, ESocksProxy, NetworkRetryManager, JsonRPCClient, NotEnoughFunds, EventListener,
     event_listener, bfh, InvoiceError, resolve_dns_srv, is_ip_address, log_exceptions, ignore_exceptions,
@@ -664,7 +665,7 @@ class LNGossip(Logger):
 
     def __init__(self, config: 'SimpleConfig'):
         self.config = config
-        seed = os.urandom(32)
+        seed = crandom.get_rand_bytes(32)
         node = BIP32Node.from_rootseed(seed, xtype='standard')
         xprv = node.to_xprv()
         node_keypair = generate_keypair(BIP32Node.from_xkey(xprv), LnKeyFamily.NODE_KEY)
@@ -1695,7 +1696,7 @@ class LNWallet(Logger):
             public=public,
             zeroconf=zeroconf,
             opening_fee=opening_fee,
-            temp_channel_id=os.urandom(32))
+            temp_channel_id=crandom.get_rand_bytes(32))
         chan, funding_tx = await util.wait_for2(coro, LN_P2P_NETWORK_TIMEOUT)
         util.trigger_callback('channels_updated', self.wallet)
         self.wallet.adb.add_transaction(funding_tx)  # save tx as local into the wallet
@@ -1752,7 +1753,7 @@ class LNWallet(Logger):
         channel_seed: bytes | None = None,
     ) -> LocalConfig:
         if channel_seed is None:
-            channel_seed = os.urandom(32)
+            channel_seed = crandom.get_rand_bytes(32)
         initial_msat = funding_sat * 1000 - push_msat if initiator == LOCAL else push_msat
 
         # sending empty bytes as the upfront_shutdown_script will give us the
@@ -2508,7 +2509,7 @@ class LNWallet(Logger):
                             budget=budget._replace(fee_msat=budget.fee_msat // len(per_trampoline_channel_amounts)),
                         )
                         # node_features is only used to determine is_tlv
-                        per_trampoline_secret = os.urandom(32)
+                        per_trampoline_secret = crandom.get_rand_bytes(32)
                         per_trampoline_fees = per_trampoline_amount_with_fees - per_trampoline_amount
                         self.logger.info(f'created route with trampoline fee level={paysession.trampoline_fee_level}')
                         self.logger.info(f'trampoline hops: {[hop.end_node.hex() for hop in trampoline_route]}')
@@ -2776,7 +2777,7 @@ class LNWallet(Logger):
     ) -> bytes:
         if amount_msat == 0:
             raise ValueError("amount_msat must not be 0. Use None instead.")
-        payment_preimage = os.urandom(32)
+        payment_preimage = crandom.get_rand_bytes(32)
         payment_hash = sha256(payment_preimage)
         min_final_cltv_delta = min_final_cltv_delta or MIN_FINAL_CLTV_DELTA_ACCEPTED
         invoice_features = self._prepare_invoice_features(self.features.for_bolt11_invoice(), amount_msat=amount_msat)
@@ -3027,7 +3028,7 @@ class LNWallet(Logger):
         if mpp_status.resolution > RecvMPPResolution.WAITING:
             # we are getting a htlc for a set that is not in WAITING state, it cannot be safely added
             self.logger.info(f"htlc set cannot accept htlc, failing htlc: {channel_id=} {htlc.htlc_id=}")
-            if mpp_status == RecvMPPResolution.EXPIRED:
+            if mpp_status.resolution == RecvMPPResolution.EXPIRED:
                 raise OnionRoutingFailure(code=OnionFailureCode.MPP_TIMEOUT, data=b'')
             raise OnionRoutingFailure(
                 code=OnionFailureCode.INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS,
@@ -3531,6 +3532,8 @@ class LNWallet(Logger):
     def can_get_zeroconf_channel(self) -> bool:
         if not self.config.OPEN_ZEROCONF_CHANNELS:
             return False
+        if self.config.EXPERIMENTAL_LN_FORWARD_PAYMENTS or self.config.EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS:
+            return False
         node_id = self.trusted_zeroconf_node_id
         if not node_id:
             return False
@@ -4025,10 +4028,13 @@ class LNWallet(Logger):
                 min_inc_cltv_abs = min(
                     mpp_htlc.htlc.cltv_abs
                     for mpp_htlc in processed_htlc_set.keys())  # take "min" to assume worst-case
+                total_msat = any_outer_onion.total_msat
+                sum_inc_amt_msat = sum(mpp_htlc.htlc.amount_msat for mpp_htlc in processed_htlc_set)
+                assert total_msat <= sum_inc_amt_msat, f"{total_msat=} should be <= {sum_inc_amt_msat=}"
                 await self._maybe_forward_trampoline(
                     payment_hash=any_mpp_htlc.htlc.payment_hash,
                     closest_inc_cltv_abs=min_inc_cltv_abs,
-                    total_msat=any_outer_onion.total_msat,
+                    total_msat=total_msat,
                     any_trampoline_onion=any_trampoline_onion,
                     fw_payment_key=payment_key,
                 )
@@ -4162,7 +4168,7 @@ class LNWallet(Logger):
             self, *,
             payment_hash: bytes,
             closest_inc_cltv_abs: int,
-            total_msat: int,  # total_msat of the outer onion
+            total_msat: int,  # total_msat of the outer onion. this is <= sum_inc_amt_msat
             any_trampoline_onion: ProcessedOnionPacket,  # any trampoline onion of the incoming htlc set, they should be similar
             fw_payment_key: str,
     ) -> None:
@@ -4175,7 +4181,7 @@ class LNWallet(Logger):
         payload = any_trampoline_onion.hop_data.payload
         payment_data = payload.get('payment_data')
         try:
-            payment_secret = payment_data['payment_secret'] if payment_data else os.urandom(32)
+            payment_secret = payment_data['payment_secret'] if payment_data else crandom.get_rand_bytes(32)
             outgoing_node_id = payload["outgoing_node_id"]["outgoing_node_id"]
             amt_to_forward = payload["amt_to_forward"]["amt_to_forward"]
             out_cltv_abs = payload["outgoing_cltv_value"]["outgoing_cltv_value"]
@@ -4196,6 +4202,7 @@ class LNWallet(Logger):
             self.logger.exception('')
             raise OnionRoutingFailure(code=OnionFailureCode.INVALID_ONION_PAYLOAD, data=b'\x00\x00\x00')
 
+        assert total_msat >= amt_to_forward  # sanity check: money_in >= money_out
         # these are the fee/cltv paid by the sender
         # pay_to_node will raise if they are not sufficient
         budget = PaymentFeeBudget(
@@ -4251,11 +4258,10 @@ class LNWallet(Logger):
                     next_onion=next_onion)
                 return
 
-        if not direct_channels:
-            if budget.fee_msat < 1000:
-                raise OnionRoutingFailure(code=OnionFailureCode.TRAMPOLINE_FEE_INSUFFICIENT, data=b'')
-            if budget.cltv < 576:
-                raise OnionRoutingFailure(code=OnionFailureCode.TRAMPOLINE_EXPIRY_TOO_SOON, data=b'')
+        if budget.fee_msat < (1000 if not direct_channels else 0):
+            raise OnionRoutingFailure(code=OnionFailureCode.TRAMPOLINE_FEE_INSUFFICIENT, data=b'')
+        if budget.cltv < (576 if not direct_channels else 0):
+            raise OnionRoutingFailure(code=OnionFailureCode.TRAMPOLINE_EXPIRY_TOO_SOON, data=b'')
 
         try:
             await self.pay_to_node(
@@ -4332,7 +4338,7 @@ class LNWallet(Logger):
         for i in range(len(route)):
             self.logger.info(f"  {i}: edge={route[i].short_channel_id} hop_data={hops_data[i]!r}")
         assert final_cltv_abs <= cltv_abs, (final_cltv_abs, cltv_abs)
-        session_key = os.urandom(32) # session_key
+        session_key = crandom.get_rand_bytes(32)  # session_key
         # if we are forwarding a trampoline payment, add trampoline onion
         if trampoline_onion:
             self.logger.info(f'adding trampoline onion to final payload')
