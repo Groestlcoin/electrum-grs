@@ -460,7 +460,8 @@ class HTLCManager:
         ctn = self.ctn_latest(subject) + 1
         return self.htlcs(subject, ctn)
 
-    def was_htlc_preimage_released(self, *, htlc_id: int, htlc_proposer: HTLCOwner) -> bool:
+    def was_htlc_settled(self, *, htlc_id: int, htlc_proposer: HTLCOwner) -> bool:
+        """Returns whether an HTLC has been (or will be if we already know) settled."""
         settles = self.log[htlc_proposer]['settles']
         if htlc_id not in settles:
             return False
@@ -508,6 +509,20 @@ class HTLCManager:
         sent = [(SENT, htlc) for htlc in self.log[LOCAL]['adds'].values()]
         received = [(RECEIVED, htlc) for htlc in self.log[REMOTE]['adds'].values()]
         return sent + received
+
+    @with_lock
+    def get_all_not_irrevocably_removed_htlcs(self, *, htlc_proposer: HTLCOwner) -> Sequence[UpdateAddHtlc]:
+        """Return the list of HTLCs sent by 'htlc_proposer' that are still
+        not yet irrevocably removed on both sides.
+        """
+        active_ids = self._maybe_active_htlc_ids[htlc_proposer]
+        ret = []
+        for htlc_id in active_ids:
+            if self.is_htlc_irrevocably_removed_yet(htlc_proposer=htlc_proposer, htlc_id=htlc_id):
+                continue
+            htlc = self.log[htlc_proposer]['adds'][htlc_id]
+            ret.append(htlc)
+        return ret
 
     @with_lock
     def get_balance_msat(self, whose: HTLCOwner, *, ctx_owner=HTLCOwner.LOCAL, ctn: int | None = None,
