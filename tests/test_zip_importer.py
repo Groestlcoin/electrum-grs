@@ -5,7 +5,7 @@ import os
 import sys
 import zipfile
 
-from electrum.zip_importer import MemoryZipImporter
+from electrum_grs.zip_importer import MemoryZipImporter
 
 from . import ElectrumTestCase
 
