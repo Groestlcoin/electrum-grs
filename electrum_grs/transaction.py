@@ -462,10 +462,13 @@ class TxInput:
         n = vds.read_compact_size()
         return list(vds.read_bytes(vds.read_compact_size()) for i in range(n))
 
-    def is_segwit(self, *, guess_for_address=False) -> bool:
+    def has_witness(self) -> bool:
         if self.witness not in (b'\x00', b'', None):
             return True
         return False
+
+    def is_segwit(self, *, guess_for_address=False) -> bool:
+        return self.has_witness()
 
     def is_taproot(self) -> Optional[bool]:
         if self._is_taproot is None:
@@ -1165,8 +1168,24 @@ class Transaction:
             sig64 = ecc.ecdsa_sig64_from_der_sig(der_sig)
             return pubkey.ecdsa_verify(sig64, msg_hash)
 
-    def is_segwit(self, *, guess_for_address=False):
+    def is_any_segwit(self, *, guess_for_address: bool = False) -> bool:
+        # If any input is segwit, the tx needs to serialized with a witness and it will have a wtxid != txid,
+        # however the non-segwit inputs are still malleable.
         return any(txin.is_segwit(guess_for_address=guess_for_address)
+                   for txin in self.inputs())
+
+    def is_all_segwit(self, *, guess_for_address: bool = False) -> bool:
+        """Returns whether *all* inputs are segwit.
+
+        If not, the txid is trivially malleable:
+        - by any signer, who can e.g. re-sign the non-segwit inputs using different nonces
+        - by miners: most third-party malleability results in the tx being non-standard,
+          so at least arbitrary tx relaying nodes cannot do it. But if they mine the tx, they can.
+
+        ref https://github.com/bitcoin/bips/blob/master/bip-0062.mediawiki#motivation
+        ref https://github.com/bitcoin/bitcoin/blob/05bc2f53ce0cb239c17dbdd6b261bd2db7d2a940/src/policy/policy.h#L118-L131
+        """
+        return all(txin.is_segwit(guess_for_address=guess_for_address)
                    for txin in self.inputs())
 
     def invalidate_ser_cache(self):
@@ -1203,8 +1222,8 @@ class Transaction:
             for txin in inputs)
         txouts = var_int(len(outputs)).hex() + ''.join(o.serialize_to_network().hex() for o in outputs)
 
-        use_segwit_ser_for_estimate_size = estimate_size and self.is_segwit(guess_for_address=True)
-        use_segwit_ser_for_actual_use = not estimate_size and self.is_segwit()
+        use_segwit_ser_for_estimate_size = estimate_size and self.is_any_segwit(guess_for_address=True)
+        use_segwit_ser_for_actual_use = not estimate_size and self.is_any_segwit()
         use_segwit_ser = use_segwit_ser_for_estimate_size or use_segwit_ser_for_actual_use
         if include_sigs and not force_legacy and use_segwit_ser:
             marker = '00'
@@ -1232,8 +1251,7 @@ class Transaction:
     def txid(self) -> Optional[str]:
         if self._cached_txid is None:
             self.deserialize()
-            all_segwit = all(txin.is_segwit() for txin in self.inputs())
-            if not all_segwit and not self.is_complete():
+            if not self.is_all_segwit() and not self.is_complete():
                 return None
             try:
                 ser = self.serialize_to_network(force_legacy=True)
@@ -1412,7 +1430,7 @@ class Transaction:
     def estimated_witness_size(self):
         """Return an estimate of witness size in bytes."""
         estimate = not self.is_complete()
-        if not self.is_segwit(guess_for_address=estimate):
+        if not self.is_any_segwit(guess_for_address=estimate):
             return 0
         inputs = self.inputs()
         witness = b"".join(self.serialize_witness(x, estimate_size=estimate) for x in inputs)
@@ -1939,6 +1957,8 @@ class PartialTxInput(TxInput, PSBTSection):
             return True
         if self.script_sig is not None and not self.is_segwit():
             return True
+        if self.has_witness() and self.is_native_segwit():
+            return True
         if desc := self.script_descriptor:
             try:
                 desc.satisfy(allow_dummy=False, sigdata=self.sigs_ecdsa)
@@ -2043,7 +2063,7 @@ class PartialTxInput(TxInput, PSBTSection):
 
     def is_segwit(self, *, guess_for_address=False) -> bool:
         """Whether this input is segwit (any witness version)."""
-        if super().is_segwit():
+        if self.has_witness():
             return True
         if self.is_native_segwit() or self.is_p2sh_segwit():
             return True
@@ -2485,6 +2505,11 @@ class PartialTransaction(Transaction):
         # keypairs:  pubkey_bytes -> secret_bytes
         sighash_cache = SighashCache()
         for i, txin in enumerate(self.inputs()):
+            if txin.has_witness():
+                # note: serialize_preimage relies on is_segwit(), which returns True
+                # if the PSBT contains a witness, even for non-segwit inputs.
+                _logger.info(f"not signing input {i}: it already has a witness")
+                continue
             for pubkey in txin.pubkeys:
                 if txin.is_complete():
                     break

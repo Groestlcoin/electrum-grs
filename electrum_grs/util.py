@@ -22,6 +22,7 @@
 # SOFTWARE.
 import concurrent.futures
 import copy
+import dataclasses
 from dataclasses import dataclass
 import logging
 import os
@@ -235,7 +236,7 @@ class UserCancelled(Exception):
     pass
 
 
-def to_decimal(x: Union[str, float, int, Decimal]) -> Decimal:
+def to_decimal(x: str | float | int | Decimal | None) -> Decimal:
     # helper function mainly for float->Decimal conversion, i.e.:
     #   >>> Decimal(41754.681)
     #   Decimal('41754.680999999996856786310672760009765625')
@@ -245,6 +246,8 @@ def to_decimal(x: Union[str, float, int, Decimal]) -> Decimal:
         return x
     if isinstance(x, int):
         return Decimal(x)
+    if x is None:
+        return Decimal('NaN')
     return Decimal(str(x))
 
 
@@ -451,6 +454,21 @@ def json_decode(x):
         return json.loads(x, parse_float=Decimal)
     except Exception:
         return x
+
+
+def repr_dataclass(obj, formatters: Dict[Union[str, type], Callable[[Any], str]]) -> str:
+    """repr of a dataclass instance, with a custom formatting of some fields (like the
+    'repr' parameter of attrs). formatters is keyed by field name, or by the type of a value.
+    None values are never formatted.
+    """
+    parts = []
+    for f in dataclasses.fields(obj):
+        if not f.repr:
+            continue
+        value = getattr(obj, f.name)
+        fmt = None if value is None else formatters.get(f.name) or formatters.get(type(value))
+        parts.append(f"{f.name}={fmt(value) if fmt else repr(value)}")
+    return f"{type(obj).__name__}({', '.join(parts)})"
 
 
 def json_normalize(x):

@@ -1181,7 +1181,7 @@ class Peer(Logger, EventListener):
                 raise Exception('op_return output not found in funding tx')
         # must not be malleable
         funding_tx.set_rbf(False)
-        if not funding_tx.is_segwit():
+        if not funding_tx.is_all_segwit():
             raise Exception('Funding transaction is not segwit')
         funding_txid = funding_tx.txid()
         assert funding_txid
@@ -1481,6 +1481,7 @@ class Peer(Logger, EventListener):
         if is_zeroconf:
             # FIXME shouldn't we wait until funding_tx is at least in the mempool?!
             #   We haven't even validated funding_tx really contains the multisig funding output!
+            #   (TODO also check funding_tx.is_all_segwit())
             #   This is unsafe. MUST be reworked before mainnet usage.
             chan.set_state(ChannelState.FUNDED)
             self.send_channel_ready(chan)
@@ -2524,7 +2525,7 @@ class Peer(Logger, EventListener):
             else:
                 # We raise fees more aggressively than we lower them. Overpaying is not too bad,
                 # but lowballing can be fatal if we can't even get into the mempool...
-                high_fee = 2 * current_feerate_per_kw  # type: # Union[float, int]
+                high_fee = 2 * current_feerate_per_kw  # type: Union[float, int]
                 low_fee = self.lnworker.current_low_feerate_per_kw_srk_channel()  # type: Optional[Union[float, int]]
                 if low_fee is None:
                     return None

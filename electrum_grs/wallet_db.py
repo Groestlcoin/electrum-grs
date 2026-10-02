@@ -30,8 +30,7 @@ from typing import (Dict, Optional, List, Tuple, Set, Iterable, NamedTuple, Sequ
                     Union, AbstractSet)
 import time
 from functools import partial
-
-import attr
+import dataclasses
 
 from . import bitcoin
 from . import constants
@@ -85,10 +84,10 @@ class TxFeesValue(NamedTuple):
 
 
 @stored_at('/db_metadata')
-@attr.s
+@dataclasses.dataclass
 class DBMetadata(StoredObject):
-    creation_timestamp = attr.ib(default=None, type=int)
-    first_electrum_version_used = attr.ib(default=None, type=str)
+    creation_timestamp: Optional[int] = None
+    first_electrum_version_used: Optional[str] = None
 
     def to_str(self) -> str:
         ts = self.creation_timestamp
@@ -1702,7 +1701,8 @@ class WalletDB(JsonDB):
         return {int(n): (v, cb) for (n, (v, cb)) in d.items()}
 
     @modifier
-    def add_txi_addr(self, tx_hash: str, addr: str, ser: str, v: int) -> None:
+    def add_txi_addr(self, tx_hash: str, addr: str, ser: str, v: int) -> bool:
+        """Returns True if the item was newly added to the DB, or False if it was already there."""
         assert isinstance(tx_hash, str)
         assert isinstance(addr, str)
         assert isinstance(ser, str)
@@ -1712,7 +1712,10 @@ class WalletDB(JsonDB):
         d = self.txi[tx_hash]
         if addr not in d:
             d[addr] = {}
+        if d[addr].get(ser) == v:
+            return False
         d[addr][ser] = v
+        return True
 
     @modifier
     def add_txo_addr(self, tx_hash: str, addr: str, n: Union[int, str], v: int, is_coinbase: bool) -> None:
