@@ -70,8 +70,8 @@ if [ "$BUILD_TYPE" = "wine" ]; then
     cp -fv "$build_dir/libZXing.dll" "$build_dir/$library"
 fi
 host_strip "$build_dir/$library"
-cp -Lfv "$build_dir/$library" "$PROJECT_ROOT/electrum/$library"
-info "$library has been placed in the inner electrum folder."
+cp -Lfv "$build_dir/$library" "$PROJECT_ROOT/electrum_grs/$library"
+info "$library has been placed in the inner electrum_grs folder."
 if [ -n "$DLL_TARGET_DIR" ]; then
     cp -Lfv "$build_dir/$library" "$DLL_TARGET_DIR/$library"
 fi
