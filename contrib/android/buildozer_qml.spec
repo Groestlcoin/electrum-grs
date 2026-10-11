@@ -81,7 +81,7 @@ requirements =
     pycryptodomex,
     pyqt6sip,
     pyqt6,
-    libzxing
+    libzxing,
     groestlcoin_hash==1.0.3
 
 # (str) Presplash of the application
