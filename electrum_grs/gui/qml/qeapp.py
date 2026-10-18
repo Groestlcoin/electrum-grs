@@ -173,7 +173,7 @@ class QEAppController(BaseCrashReporter, QObject):
             )
         try:
             if self.isAndroid():
-                self._notify_android('Electrum', message, large_icon=icon)
+                self._notify_android('Electrum-GRS', message, large_icon=icon)
                 return
             # TODO: lazy load not in UI thread please
             global notification

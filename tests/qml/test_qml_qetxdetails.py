@@ -1,12 +1,12 @@
 import gc
 
-from electrum import SimpleConfig
-from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED
-from electrum.bitcoin import address_to_script
-from electrum.fee_policy import FixedFeePolicy
-from electrum.gui.qml.qetxdetails import QETxDetails
-from electrum.gui.qml.qewallet import QEWallet
-from electrum.transaction import PartialTxOutput, Transaction
+from electrum_grs import SimpleConfig
+from electrum_grs.address_synchronizer import TX_HEIGHT_UNCONFIRMED
+from electrum_grs.bitcoin import address_to_script
+from electrum_grs.fee_policy import FixedFeePolicy
+from electrum_grs.gui.qml.qetxdetails import QETxDetails
+from electrum_grs.gui.qml.qewallet import QEWallet
+from electrum_grs.transaction import PartialTxOutput, Transaction
 
 from .. import ElectrumTestCase, restore_wallet_from_text__for_unittest
 
