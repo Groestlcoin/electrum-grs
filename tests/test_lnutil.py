@@ -803,7 +803,7 @@ class TestLNUtil(ElectrumTestCase):
     def test_commitment_tx_anchors_test_vectors(self):
         # this test is only valid for the original anchor output test vectors (not anchors-zero-fee-htlcs),
         # therefore we patch the effective htlc tx weight to result in a finite weight
-        from electrum import lnutil
+        from electrum_grs import lnutil
         effective_htlc_tx_weight_original = lnutil.effective_htlc_tx_weight
 
         def effective_htlc_tx_weight_patched(success: bool, has_anchors: bool):

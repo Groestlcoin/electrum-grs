@@ -452,7 +452,7 @@ class WaitingDialog(WindowModalDialog):
 class RunCoroutineDialog(WaitingDialog):
 
     def __init__(self, parent: QWidget, message: str, coroutine):
-        from electrum import util
+        from electrum_grs import util
         import asyncio
         import concurrent.futures
         loop = util.get_asyncio_loop()
