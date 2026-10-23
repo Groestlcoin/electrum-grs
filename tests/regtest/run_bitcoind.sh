@@ -5,6 +5,7 @@ mkdir -p ~/.groestlcoin
 cat > ~/.groestlcoin/groestlcoin.conf <<EOF
 regtest=1
 txindex=1
+txospenderindex=1
 printtoconsole=1
 rpcuser=doggman
 rpcpassword=donkey
