@@ -36,7 +36,7 @@ $ sudo apt-get install python3-pyqt6
 
 QR code recognition uses QtMultimedia and [zxing-cpp](https://github.com/zxing-cpp/zxing-cpp/):
 ```
-$ sudo apt-get install python3-pyqt6.qtmultimedia libzxing3 (or libzxing4)
+$ sudo apt-get install python3-pyqt6.qtmultimedia libzxing3  # (or libzxing4)
 ```
 
 #### libsecp256k1
