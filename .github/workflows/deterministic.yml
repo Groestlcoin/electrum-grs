@@ -4,7 +4,7 @@ on: [push, pull_request]
 
 jobs:
   windows:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - name: Set up Python ${{ matrix.python-version }}
@@ -32,13 +32,13 @@ jobs:
           name: electrum-grs-${{ github.sha }}-windows
 
   appimage:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
         with:
-          python-version: 3.12.10
+          python-version: 3.12.14
       - name: Prepare type2 runtime on host (uses host Docker)
         shell: bash
         run: |
