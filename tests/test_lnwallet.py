@@ -1051,10 +1051,10 @@ class TestChannelBackup(ToyServerTestCase):
 
         # the onchain backup only contains a node id prefix: bob must be findable as a hardcoded node
         bob_host, bob_port = self.bob_instance.config.LIGHTNING_LISTEN.rsplit(':', 1)
-        electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
+        electrum_grs.trampoline._TRAMPOLINE_NODES_UNITTESTS = {
             'bob': LNPeerAddr(host=bob_host, port=int(bob_port), pubkey=self.bob.lnworker.node_keypair.pubkey),
         }
-        self.addCleanup(lambda: electrum.trampoline._TRAMPOLINE_NODES_UNITTESTS.clear())
+        self.addCleanup(lambda: electrum_grs.trampoline._TRAMPOLINE_NODES_UNITTESTS.clear())
         await alice.lnworker.request_force_close(chan_id)
 
         # bob force-closes with his own ctx, and alice claims her balance out of it

@@ -449,7 +449,7 @@ class TestSwapClaim(ToyServerTestCase):
         transport = MockSwapServerTransport(config=self.alice.config, sm=self.sm)
         # the hold invoice is created with a 300s expiry, so this is one second past it
         expired_clock = now() + 301
-        with mock.patch('electrum.submarine_swaps.now', lambda: expired_clock):
+        with mock.patch('electrum_grs.submarine_swaps.now', lambda: expired_clock):
             funding_txid = await self.sm.wait_for_htlcs_and_broadcast(
                 transport=transport, swap=swap, invoice=self.invoice, tx=tx)
         # we sent the request to the server

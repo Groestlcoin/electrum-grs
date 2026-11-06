@@ -156,7 +156,7 @@ def send_trampoline_htlc_to_forward(
         "payment_data": {"payment_secret": outer_payment_secret, "total_msat": htlc_amount_msat},
         "trampoline_onion_packet": {"trampoline_onion_packet": trampoline_onion.to_bytes()},
     })]
-    onion = electrum.lnonion.new_onion_packet(
+    onion = electrum_grs.lnonion.new_onion_packet(
         [w2.node_keypair.pubkey], os.urandom(32), hops_data, associated_data=payment_hash)
     return p1.send_htlc(
         chan=chan,
@@ -3002,13 +3002,13 @@ class TestPeerForwarding(TestPeer):
                 payment_data['total_msat'] *= 2  # bob should expect double the amount she actually receives
                 payload['payment_data'] = payment_data
                 hops_data[-1] = dataclasses.replace(hops_data[-1], payload=payload)
-            return electrum.lnonion.new_onion_packet(payment_path_pubkeys, session_key, hops_data, **kwargs)
+            return electrum_grs.lnonion.new_onion_packet(payment_path_pubkeys, session_key, hops_data, **kwargs)
 
         graph = self.create_square_graph(direct=False, is_legacy=True)
         alice = graph.workers['alice']
         alice.config.INITIAL_TRAMPOLINE_FEE_LEVEL = 6  # set high so the payment would succeed if bob forwarded
         with self.assertLogs('electrum', level='INFO') as logs, self.assertRaises(NoPathFound):
-            with mock.patch('electrum.lnworker.new_onion_packet', side_effect=modified_new_onion_packet_lnworker):
+            with mock.patch('electrum_grs.lnworker.new_onion_packet', side_effect=modified_new_onion_packet_lnworker):
                 await self._run_trampoline_payment(graph, attempts=1)
         self.assertTrue(any('MPP TIMEOUT' in record.getMessage() for record in logs.records))
         bob_carol_channel = graph.channels[('bob', 'carol')][0]

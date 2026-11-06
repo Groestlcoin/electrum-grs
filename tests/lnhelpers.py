@@ -209,11 +209,11 @@ class MockLNGossip:
         return None, None, None
 
 
-class MockWalletFactory(electrum.wallet.Wallet):
+class MockWalletFactory(electrum_grs.wallet.Wallet):
 
     @staticmethod
     def wallet_class(wallet_type):
-        real_wallet_class = electrum.wallet.Wallet.wallet_class(wallet_type)
+        real_wallet_class = electrum_grs.wallet.Wallet.wallet_class(wallet_type)
         if real_wallet_class is Standard_Wallet:
             return MockStandardWallet
         return real_wallet_class

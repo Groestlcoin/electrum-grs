@@ -70,7 +70,7 @@ find -exec touch -h -d '2000-11-11T11:11:11+00:00' {} +
 popd
 
 info "building NSIS installer"
-# $VERSION could be passed to the electrum.nsi script, but this would require some rewriting in the script itself.
+# $VERSION could be passed to the electrum-grs.nsi script, but this would require some rewriting in the script itself.
 makensis -DPRODUCT_VERSION=$VERSION electrum-grs.nsi
 
 cd dist
