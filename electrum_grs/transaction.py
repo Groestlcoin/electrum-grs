@@ -1135,7 +1135,7 @@ class Transaction:
                     hashOutputs = scache.hashOutputs
                 elif (sighash & 0x1f) == Sighash.SINGLE and txin_index < len(outputs):
                     # note: we could cache this to avoid some potential DOS vectors:
-                    hashOutputs = sha256d(outputs[txin_index].serialize_to_network())
+                    hashOutputs = sha256(outputs[txin_index].serialize_to_network())
                 else:
                     hashOutputs = bytes(32)
                 outpoint = txin.prevout.serialize_to_network()
@@ -1193,7 +1193,7 @@ class Transaction:
             else:
                 pre_hash = self.serialize_preimage(
                     txin_index, sighash=sighash, sighash_cache=sighash_cache, strict=strict)
-                msg_hash = sha256d(pre_hash)
+                msg_hash = sha256(pre_hash)
             pubkey = ecc.ECPubkey(pubkey_bytes)
             sig64 = ecc.ecdsa_sig64_from_der_sig(der_sig)
             return pubkey.ecdsa_verify(sig64, msg_hash)
