@@ -18,8 +18,8 @@ from electrum_grs.util import bfh, versiontuple, UserFacingException
 from electrum_grs.logging import get_logger
 from electrum_grs.plugin import runs_in_hwd_thread, Device
 
-from ..hw_wallet import HW_PluginBase, HardwareClientBase
-from ..hw_wallet.plugin import is_any_tx_output_on_change_branch, validate_op_return_output, LibraryFoundButUnusable
+from electrum_grs.hw_wallet import HW_PluginBase, HardwareClientBase
+from electrum_grs.hw_wallet.plugin import is_any_tx_output_on_change_branch, validate_op_return_output, LibraryFoundButUnusable
 
 if TYPE_CHECKING:
     from electrum_grs.plugin import DeviceInfo
