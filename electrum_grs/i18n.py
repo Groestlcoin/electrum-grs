@@ -99,6 +99,39 @@ def _ensure_translation_keeps_format_string_syntax_similar(translator):
 def _(msg: str, *, context=None) -> str:
     if msg == "":
         return ""  # empty string must not be translated. see #7158
+
+    dic = [
+        ('BTC', 'GRS'),
+        ('Electrum Technologies GmbH', 'Groestlcoin Developers'),
+        ('Electrum', 'Electrum-GRS'),
+        ('Bitcoin', 'Groestlcoin'),
+        ('Bitcoins', 'Groestlcoins'),
+        ('bitcoin', 'groestlcoin'),
+        ('bitcoins', 'groestlcoins'),
+        ('satoshi', 'gro'),
+        ('satoshis', 'gros'),
+        ('غرسلكوين', 'بتكوين'),
+        ('غرسلكوين', 'بيتكوين'),
+        ('غرسلكوين', 'بیت‌کوین'),
+        ('גרוסטלקוין', 'הביטקוין'),
+        ('비트코인', '그로스톨코인'),
+        ('比特币', '格羅斯币'),
+        ('比特幣', '格羅斯幣'),
+        ('Биткоин', 'Грoстлкоин'),
+        ('Биткойн', 'Грoстлкоин'),
+        ('биткойн', 'Грoстлкоин'),
+        ('ビットコイン', 'グロストルコイン'),
+    ]
+
+    # Normalize Groestlcoin terminology before translation.
+    for b, m in sorted(dic, key=lambda item: len(item[1]), reverse=True):
+        msg = msg.replace(m, b)
+
+    def restore_terms(text: str) -> str:
+        for b, m in sorted(dic, key=lambda item: len(item[0]), reverse=True):
+            text = text.replace(b, m)
+        return text
+
     if context:
         contexts = [context]
         if context[-1] != "|":  # try with both "|" suffix and without
@@ -108,9 +141,9 @@ def _(msg: str, *, context=None) -> str:
         for ctx in contexts:
             out = _language.pgettext(ctx, msg)
             if out != msg:  # found non-trivial translation
-                return out
+                return restore_terms(out)
         # else try without context
-    return _language.gettext(msg)
+    return restore_terms(_language.gettext(msg))
 
 
 def set_language(x: Optional[str]) -> None:
