@@ -64,9 +64,6 @@ def _ensure_translation_keeps_format_string_syntax_similar(translator):
                 only_once=True)
             return msg
         # num of replacement fields must match:
-        _logger.info(f"i18n debug original parsed: {parsed1!r}")
-        _logger.info(f"i18n debug translation parsed: {parsed2!r}")
-        _logger.info(f"i18n debug lengths: {len(parsed1)} != {len(parsed2)}")
         if len(parsed1) != len(parsed2):
             _logger.warning(
                 f"rejected translation string: num replacement fields mismatch. original={msg!r}. {translation=!r}",
