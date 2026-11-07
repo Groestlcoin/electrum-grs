@@ -25,9 +25,8 @@ device_logger = logging.getLogger(f'{__name__}-device')
 # It relies on the BLE dependencies being available
 try:
     from .jade_ble import JadeBleImpl
-except (ImportError, FileNotFoundError) as e:
-    logger.warning(e)
-    logger.warning('BLE scanning/connectivity will not be available')
+except (ImportError, FileNotFoundError):
+    JadeBleImpl = None
 
 
 # Default serial connection
