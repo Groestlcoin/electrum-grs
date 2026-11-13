@@ -4,7 +4,7 @@ It reads the current stylesheet, appends our modifications and sets the new styl
 
 from PyQt6 import QtWidgets
 
-from electrum import platform
+from electrum_grs import platform
 
 
 CUSTOM_PATCH_FOR_DARK_THEME = '''

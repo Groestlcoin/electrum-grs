@@ -15,7 +15,7 @@ import copy
 import subprocess
 import hashlib
 
-from electrum import platform
+from electrum_grs import platform
 
 if TYPE_CHECKING:
     from .simple_config import SimpleConfig
