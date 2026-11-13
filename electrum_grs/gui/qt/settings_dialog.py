@@ -24,7 +24,6 @@
 # SOFTWARE.
 
 import ast
-import sys
 from typing import TYPE_CHECKING, Dict
 
 from PyQt6.QtCore import Qt
@@ -32,7 +31,7 @@ from PyQt6.QtWidgets import (QComboBox,  QTabWidget, QDialog, QSpinBox,  QCheckB
                              QVBoxLayout, QGridLayout, QLineEdit, QWidget, QHBoxLayout)
 
 from electrum_grs.i18n import _, get_gui_lang_names
-from electrum_grs import util
+from electrum_grs import util, platform
 from electrum_grs.util import base_units_list, event_listener
 
 from electrum_grs.gui.common_qt.util import QtEventListener
@@ -236,7 +235,7 @@ class SettingsDialog(QDialog, QtEventListener):
             self.config.cv.GUI_QT_SCREENSHOT_PROTECTION
         )
         screenshot_protection_cb.setChecked(self.config.GUI_QT_SCREENSHOT_PROTECTION)
-        if sys.platform not in ['windows', 'win32']:
+        if not platform.is_windows():
             screenshot_protection_cb.setChecked(False)
             screenshot_protection_cb.setDisabled(True)
             screenshot_protection_cb.setToolTip(_("This option is only available on Windows"))
