@@ -82,6 +82,8 @@ assert PREFERRED_NETWORK_PROTOCOL in KNOWN_ELEC_PROTOCOL_TRANSPORTS
 MAX_NUM_HEADERS_PER_REQUEST = 2016
 assert MAX_NUM_HEADERS_PER_REQUEST >= CHUNK_SIZE
 
+MAX_SERVER_BANNER_LEN = 2000  # in chars
+
 
 class NetworkTimeout:
     # seconds
@@ -1156,11 +1158,11 @@ class Interface(Logger):
             assert len(resp_header) == 2, f"resp_header contains redundant fields. got {resp_header.keys()}"
             header_dict = blockchain.deserialize_header(header_bytes, height)
             # process header
+            if height < constants.net.max_checkpoint():
+                raise GracefulDisconnect(
+                    f"server tip below max checkpoint. ({height} < {constants.net.max_checkpoint()})")
             self.tip_header = header_dict  # TODO assert it got changed to something different?
             self.tip = height
-            if self.tip < constants.net.max_checkpoint():
-                raise GracefulDisconnect(
-                    f"server tip below max checkpoint. ({self.tip} < {constants.net.max_checkpoint()})")
             self._mark_ready()
             self._headers_cache.clear()  # tip changed, so assume anything could have happened with chain
             self._headers_cache[height] = header_bytes
@@ -1616,6 +1618,13 @@ class Interface(Logger):
         # check response
         if not isinstance(res, str):
             raise RequestCorrupted(f'{res!r} should be a str')
+        # Qt is slow to render some specific characters (e.g. emojis), limit the size
+        # and allow only printable ascii characters to prevent DoS and unicode tricks
+        if len(res) > MAX_SERVER_BANNER_LEN:
+            self.logger.info(f"server banner too long ({len(res)} chars), truncating")
+            res = res[:MAX_SERVER_BANNER_LEN] + f" [truncated, {MAX_SERVER_BANNER_LEN=}]"
+        res = res.replace('\r\n', '\n')  # normalize CRLF, so Windows line endings don't become '?'
+        res = re.sub(r'[^\x20-\x7e\n]', '?', res)  # keep only printable ASCII and newlines
         return res
 
     async def get_donation_address(self) -> str:

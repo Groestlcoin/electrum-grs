@@ -4,14 +4,14 @@
 
 import asyncio
 
-from electrum_grs import blockchain, util
+from electrum_grs import blockchain, util, network
 from electrum_grs.blockchain import Blockchain
 from electrum_grs.fee_policy import FeeTimeEstimates, FEE_ETA_TARGETS
 from electrum_grs.interface import Interface, ServerAddr
 from electrum_grs.simple_config import SimpleConfig
 from electrum_grs.transaction import Transaction
 from electrum_grs.util import OldTaskGroup
-from electrum_grs.wallet import Abstract_Wallet
+from electrum_grs.wallet import Abstract_Wallets
 
 from .toyserver import ToyServer
 
@@ -84,10 +84,11 @@ class ToyNetwork:
         pass
     def blockchain(self) -> Blockchain:
         return self.interface.blockchain
-    def get_local_height(self) -> int:
-        return self.blockchain().height()
     def is_connected(self) -> bool:
         return True
+
+    get_local_height = network.Network.get_local_height
+    get_server_height = network.Network.get_server_height
 
     # the wallet and the txbatcher broadcast through the network:
 
