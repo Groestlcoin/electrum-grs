@@ -46,7 +46,7 @@ The source-only tarball is aimed at Linux distro packagers.
 Users wanting to run from source should typically use the normal tarball.
 
 The differences are as follows:
-- the normal tarball bundles all the pure-python dependencies of Electrum.
+- the normal tarball bundles all the pure-python dependencies of Electrum-GRS.
   These are placed into the `packages/` folder, and they are automatically
   found and used at runtime.
 - the normal tarball includes compiled (.mo) locale files, the source-only tarball does not.

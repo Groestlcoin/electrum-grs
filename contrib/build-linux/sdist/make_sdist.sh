@@ -59,7 +59,7 @@ info "preparing electrum-locale."
         mv "$PY_DISTDIR/electrum-grs-$VERSION.tar.gz" "$PY_DISTDIR/../$FINAL_DISTNAME"
         rmdir "$PY_DISTDIR"
     else
-        mv "$PY_DISTDIR/electrum-$VERSION.tar.gz" "$PY_DISTDIR/$FINAL_DISTNAME"
+        mv "$PY_DISTDIR/electrum-grs-$VERSION.tar.gz" "$PY_DISTDIR/$FINAL_DISTNAME"
     fi
 
     # the initial tar.gz is not reproducible, see https://github.com/pypa/setuptools/issues/2133

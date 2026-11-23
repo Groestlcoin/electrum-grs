@@ -10,7 +10,7 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
         with:
-          python-version: 3.12.10
+          python-version: 3.14.10
       - name: Builder image
         env:
           TARGET_OS: Windows
@@ -38,7 +38,7 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
         with:
-          python-version: 3.12.14
+          python-version: 3.14.10
       - name: Prepare type2 runtime on host (uses host Docker)
         shell: bash
         run: |
@@ -237,7 +237,7 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
         with:
-          python-version: 3.12.10
+          python-version: 3.14.10
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: 26.0.1
