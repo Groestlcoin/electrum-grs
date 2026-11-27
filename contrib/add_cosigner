@@ -49,7 +49,8 @@ files = {
     "tgz": f"Electrum-GRS-{version}.tar.gz",
     "tgz_srconly": f"Electrum-GRS-sourceonly-{version}.tar.gz",
     "appimage": f"electrum-grs-{version}-x86_64.AppImage",
-    "mac": f"electrum-grs-{version_mac}.dmg",
+    "mac": f"electrum-grs-{version_mac}-x86_64.dmg",  # Intel Macs
+    "mac_arm64": f"electrum-grs-{version_mac}-arm64.dmg",  # Apple silicon Macs
     "win": f"electrum-grs-{version_win}.exe",
     "win_setup": f"electrum-grs-{version_win}-setup.exe",
     "win_portable": f"electrum-grs-{version_win}-portable.exe",

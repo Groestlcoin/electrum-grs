@@ -19,6 +19,11 @@ ICONS_FILE=f"{PROJECT_ROOT}/{PYPKG}/gui/icons/electrum-grs.icns"
 VERSION = os.environ.get("ELECTRUM_VERSION")
 if not VERSION:
     raise Exception('no version')
+# One app per architecture. PyInstaller thins every binary to this architecture,
+# so the build environment needs universal2 binaries (see make_osx.sh).
+TARGET_ARCH = os.environ.get("ELECTRUM_TARGET_ARCH")
+if TARGET_ARCH not in ('x86_64', 'arm64'):
+    raise Exception(f'ELECTRUM_TARGET_ARCH must be x86_64 or arm64, not {TARGET_ARCH!r}')
 
 block_cipher = None
 
@@ -48,7 +53,6 @@ datas = [
 ]
 datas += collect_data_files(f"{PYPKG}.plugins")
 datas += collect_data_files('trezorlib')  # TODO is this needed? and same question for other hww libs
-datas += collect_data_files('safetlib')
 datas += collect_data_files('btchip')
 datas += collect_data_files('ckcc')
 datas += collect_data_files('bitbox02')
@@ -119,7 +123,7 @@ exe = EXE(
     upx=True,
     icon=ICONS_FILE,
     console=False,
-    target_arch='x86_64',  # TODO investigate building 'universal2'
+    target_arch=TARGET_ARCH,
 )
 
 app = BUNDLE(
@@ -139,7 +143,7 @@ app = BUNDLE(
                 'CFBundleURLName': 'groestlcoin',
                 'CFBundleURLSchemes': ['groestlcoin', 'lightning', 'lnurlp', 'lnurlw', ],
             }],
-        'LSMinimumSystemVersion': '11',
+        'LSMinimumSystemVersion': '12',
         'NSCameraUsageDescription': 'Electrum-GRS would like to access the camera to scan for QR codes',
     },
 )
