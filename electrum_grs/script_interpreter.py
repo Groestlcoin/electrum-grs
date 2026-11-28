@@ -32,7 +32,7 @@ from .bitcoin import (
     opcodes, var_int, witness_push, _op_push, script_num_to_bytes, construct_witness, pubkeyhash_to_p2pkh_script,
     taproot_tweak_pubkey,
 )
-from .crypto import sha256, sha256d, hash_160, ripemd
+from .crypto import sha256, hash_160, ripemd, groestlHash
 from .transaction import Sighash, Transaction, TxOutput
 
 
@@ -1244,7 +1244,7 @@ def EvalScript(
                     elif opcode == opcodes.OP_HASH160:
                         vch_hash = hash_160(vch)
                     else:
-                        vch_hash = sha256d(vch)
+                        vch_hash = groestlHash(vch)
                     stack[-1] = vch_hash
 
                 elif opcode == opcodes.OP_CODESEPARATOR:
@@ -1525,7 +1525,7 @@ def SignatureHash(
         if ss is not None:
             # Add sighash type and hash.
             ss.update(hash_type_ser)
-            return sha256(ss.digest())
+            return ss.digest()
 
     ss = hashlib.sha256()
     txin = txdata.vin[n_in]
@@ -1584,7 +1584,7 @@ def SignatureHash(
 
     # Add sighash type and hash.
     ss.update(hash_type_ser)
-    return sha256(ss.digest())
+    return ss.digest()
 
 
 def SignatureHashSchnorr(
@@ -2149,18 +2149,18 @@ class PrecomputedTransactionData:
         assert self.bip341_taproot_ready
         return sha256(b''.join(o.serialized[8:] for o in self.spent_outputs))
 
-    # BIP143 precomputed data (double SHA256)
+    # BIP143 precomputed data (single SHA256)
     @cached_property
     def hash_prevouts(self) -> bytes:
-        return sha256(self.prevouts_single_hash)
+        return self.prevouts_single_hash
 
     @cached_property
     def hash_sequence(self) -> bytes:
-        return sha256(self.sequences_single_hash)
+        return self.sequences_single_hash
 
     @cached_property
     def hash_outputs(self) -> bytes:
-        return sha256(self.outputs_single_hash)
+        return self.outputs_single_hash
 
     @cached_property
     def bip341_taproot_ready(self) -> bool:
