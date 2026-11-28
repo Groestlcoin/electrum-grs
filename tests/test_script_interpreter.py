@@ -7,22 +7,22 @@ from typing import List, Sequence, Tuple
 import electrum_ecc as ecc
 from electrum_ecc.util import bip340_tagged_hash
 
-from electrum import script_interpreter as si
-from electrum.script_interpreter import (
+from electrum_grs import script_interpreter as si
+from electrum_grs.script_interpreter import (
     ScriptError, ScriptFlags, SigVersion, PrecomputedTransactionData, TransactionSignatureChecker,
     ScriptVerificationError, MissingSpentOutputs,
     verify_script, verify_input,
     CONSENSUS_FLAGS, STANDARD_FLAGS, MEMPOOL_FLAGS,
 )
-from electrum.bitcoin import (
+from electrum_grs.bitcoin import (
     opcodes, construct_witness, add_number_to_script, script_num_to_bytes, taproot_output_script,
     control_block_for_taproot_script_spend,
 )
-from electrum.crypto import sha256, hash_160
-from electrum.transaction import (
+from electrum_grs.crypto import sha256, hash_160
+from electrum_grs.transaction import (
     Transaction, TxInput, TxOutput, TxOutpoint, PartialTransaction, SerializationError, BCDataStream,
 )
-from electrum.util import bfh
+from electrum_grs.util import bfh
 
 from . import ElectrumTestCase
 
