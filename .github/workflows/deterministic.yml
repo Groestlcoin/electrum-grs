@@ -26,10 +26,6 @@ jobs:
           path: contrib/build-wine/dist/*.exe
           if-no-files-found: error
           retention-days: 7
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: electrum-grs-${{ github.sha }}-windows
 
   appimage:
     runs-on: ubuntu-24.04
@@ -56,10 +52,6 @@ jobs:
           path: dist/*.AppImage
           if-no-files-found: error
           retention-days: 7
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: electrum-grs-${{ github.sha }}-appimage
 
   tarball:
     runs-on: ubuntu-latest
@@ -76,10 +68,6 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
           retention-days: 7
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: electrum-grs-${{ github.sha }}-tarball
 
   source-only-tarball:
     runs-on: ubuntu-latest
@@ -96,10 +84,6 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
           retention-days: 7
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: electrum-grs-${{ github.sha }}-source-only-tarball
 
   android-qml-arm64-v8a:
     runs-on: ubuntu-22.04
@@ -139,10 +123,6 @@ jobs:
           path: dist/*.apk
           if-no-files-found: error
           retention-days: 7
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: electrum-grs-${{ github.sha }}-android-arm64-v8a
 
   android-qml-armeabi-v7a:
     runs-on: ubuntu-22.04
@@ -182,10 +162,6 @@ jobs:
           path: dist/*.apk
           if-no-files-found: error
           retention-days: 7
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: electrum-grs-${{ github.sha }}-android-armeabi-v7a
 
   android-qml-x86_64:
     runs-on: ubuntu-22.04
@@ -225,10 +201,6 @@ jobs:
           path: dist/*.apk
           if-no-files-found: error
           retention-days: 7
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: electrum-grs-${{ github.sha }}-android-x86_64
 
   macos-x86_64:
     runs-on: macos-15-intel
@@ -250,10 +222,6 @@ jobs:
           path: dist/*.dmg
           if-no-files-found: error
           retention-days: 7
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: electrum-grs-${{ github.sha }}-macos-x86_64
 
   macos-arm64:
     runs-on: macos-15
@@ -275,7 +243,3 @@ jobs:
           path: dist/*.dmg
           if-no-files-found: error
           retention-days: 7
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: electrum-grs-${{ github.sha }}-macos-arm64
